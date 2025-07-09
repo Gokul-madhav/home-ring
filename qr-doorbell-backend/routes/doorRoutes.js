@@ -121,7 +121,8 @@ router.post("/deactivate", async (req, res) => {
 router.delete("/:doorID", async (req, res) => {
   try {
     const { doorID } = req.params;
-    const ownerID = req.body.ownerID || 'user_123'; // TODO: Get from auth
+    // Try to get ownerID from body or query
+    const ownerID = req.body.ownerID || req.query.ownerID;
 
     await db.ref(`doors/${doorID}`).remove();
     await db.ref(`users/${ownerID}/doorbells/${doorID}`).remove();
