@@ -6,7 +6,7 @@ const generateQR = require("../utils/qrGenerator");
 
 // Agora configuration
 const AGORA_APP_ID = "e99f68decc74469e93db09796e5ccd8c";
-const AGORA_APP_CERTIFICATE = "42c79730f2a04138a26c5a8339e005d8"; // Add your Agora app certificate
+const AGORA_APP_CERTIFICATE = "your_agora_app_certificate"; // Add your Agora app certificate
 
 // ✅ Generate new QR code and store in RTDB
 router.post("/generate", async (req, res) => {
@@ -53,7 +53,7 @@ router.post("/activate", async (req, res) => {
     await db.ref(`doors/${doorID}`).update({
       claimed: true,
       claimedBy: ownerID,
-      ownerPhone: phoneNumber,
+      ownerPhone: phoneNumber||null,
       status: 'active',
       activatedAt: new Date().toISOString(),
       lastActivity: new Date().toISOString()
