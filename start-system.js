@@ -45,6 +45,6 @@ visitorServer.on('close', (code) => {
 
 console.log('✅ Both servers started successfully!');
 console.log('📱 Main API server: http://localhost:5000');
-console.log('🌐 Visitor interface: http://localhost:3000');
+console.log('�� Visitor interface: https://homering.onrender.com');
 console.log('📱 Flutter app should connect to: http://localhost:5000');
 console.log('\nPress Ctrl+C to stop all servers\n'); 

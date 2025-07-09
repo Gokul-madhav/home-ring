@@ -176,7 +176,7 @@ class _QrScannerPageState extends State<QrScannerPage> {
 
     try {
       final response = await http.post(
-        Uri.parse('http://localhost:5000/api/door/activate'),
+        Uri.parse('https://homering.onrender.com/api/door/activate'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'doorID': qrText,

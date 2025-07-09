@@ -180,7 +180,7 @@ class _VideoCallPageState extends State<VideoCallPage> {
       try {
         await http.post(
           Uri.parse(
-              'http://localhost:5000/api/door/call/${widget.callID}/accept'),
+              'https://homering.onrender.com/api/door/call/${widget.callID}/accept'),
           headers: {'Content-Type': 'application/json'},
         );
       } catch (e) {
@@ -197,7 +197,8 @@ class _VideoCallPageState extends State<VideoCallPage> {
     if (widget.callID != null) {
       try {
         await http.post(
-          Uri.parse('http://localhost:5000/api/door/call/${widget.callID}/end'),
+          Uri.parse(
+              'https://homering.onrender.com/api/door/call/${widget.callID}/end'),
           headers: {'Content-Type': 'application/json'},
         );
       } catch (e) {
@@ -221,7 +222,8 @@ class _VideoCallPageState extends State<VideoCallPage> {
     if (widget.callID != null) {
       try {
         await http.post(
-          Uri.parse('http://localhost:5000/api/door/call/${widget.callID}/end'),
+          Uri.parse(
+              'https://homering.onrender.com/api/door/call/${widget.callID}/end'),
           headers: {'Content-Type': 'application/json'},
         );
       } catch (e) {

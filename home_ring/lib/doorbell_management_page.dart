@@ -23,7 +23,7 @@ class _DoorbellManagementPageState extends State<DoorbellManagementPage> {
   Future<void> _loadDoorbells() async {
     try {
       final response = await http.get(
-        Uri.parse('http://localhost:5000/api/door/my-doorbells'),
+        Uri.parse('https://homering.onrender.com/api/door/my-doorbells'),
         headers: {'Content-Type': 'application/json'},
       );
 
@@ -295,7 +295,7 @@ class _DoorbellManagementPageState extends State<DoorbellManagementPage> {
   Future<void> _deactivateDoorbell(String doorID) async {
     try {
       final response = await http.post(
-        Uri.parse('http://localhost:5000/api/door/deactivate'),
+        Uri.parse('https://homering.onrender.com/api/door/deactivate'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({'doorID': doorID}),
       );
@@ -346,7 +346,7 @@ class _DoorbellManagementPageState extends State<DoorbellManagementPage> {
 
     try {
       final response = await http.delete(
-        Uri.parse('http://localhost:5000/api/door/$doorID'),
+        Uri.parse('https://homering.onrender.com/api/door/$doorID'),
         headers: {'Content-Type': 'application/json'},
       );
 

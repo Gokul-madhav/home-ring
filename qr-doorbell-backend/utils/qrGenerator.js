@@ -2,7 +2,7 @@ const QRCode = require("qrcode");
 const fs = require("fs");
 
 async function generateQR(doorID) {
-  const url = `http://localhost:3000/${doorID}`;
+  const url = `https://homering.onrender.com/${doorID}`;
   const filePath = `./qr-codes/${doorID}.png`;
 
   // Create folder if it doesn't exist
