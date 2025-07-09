@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CLIENT_ID</key>
+	<string>952316582816-m63ojgor8lm5kfj4j40h0itj5rq7mdh6.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.952316582816-m63ojgor8lm5kfj4j40h0itj5rq7mdh6</string>
+	<key>API_KEY</key>
+	<string>AIzaSyCdZ-T-dfHr93P60vUHhYtV9HKqXIDLuX0</string>
+	<key>GCM_SENDER_ID</key>
+	<string>952316582816</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>com.example.homerRing</string>
+	<key>PROJECT_ID</key>
+	<string>home-ring-b24e4</string>
+	<key>STORAGE_BUCKET</key>
+	<string>home-ring-b24e4.firebasestorage.app</string>
+	<key>IS_ADS_ENABLED</key>
+	<false></false>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false></false>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true></true>
+	<key>IS_GCM_ENABLED</key>
+	<true></true>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true></true>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:952316582816:ios:c923994ee5b38161aee2c5</string>
+	<key>DATABASE_URL</key>
+	<string>https://home-ring-b24e4-default-rtdb.firebaseio.com</string>
+</dict>
+</plist>

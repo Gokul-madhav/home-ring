@@ -1,0 +1,27 @@
+{
+  "name": "qr-doorbell-system",
+  "version": "1.0.0",
+  "description": "Complete QR doorbell system with Agora video calling",
+  "main": "start-system.js",
+  "scripts": {
+    "start": "node start-system.js",
+    "dev": "node start-system.js",
+    "backend": "cd qr-doorbell-backend && npm run dev",
+    "visitor": "cd qr-doorbell-backend && npm run dev:visitor",
+    "flutter": "cd home_ring && flutter run",
+    "install:all": "npm install && cd qr-doorbell-backend && npm install && cd ../home_ring && flutter pub get",
+    "setup": "npm run install:all"
+  },
+  "keywords": [
+    "qr-doorbell",
+    "agora",
+    "video-calling",
+    "flutter",
+    "firebase"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  }
+} 

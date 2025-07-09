@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "952316582816",
+    "firebase_url": "https://home-ring-b24e4-default-rtdb.firebaseio.com",
+    "project_id": "home-ring-b24e4",
+    "storage_bucket": "home-ring-b24e4.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:952316582816:android:814c43703112e3eaaee2c5",
+        "android_client_info": {
+          "package_name": "com.example.home_ring"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "952316582816-if7ju3rv9jeepgq8b88358j28h78l139.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA53fIrxKHiJVlu4l-n4xQxWeyeRUDQZQ0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "952316582816-if7ju3rv9jeepgq8b88358j28h78l139.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "952316582816-m63ojgor8lm5kfj4j40h0itj5rq7mdh6.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.homerRing"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

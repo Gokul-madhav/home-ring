@@ -1,0 +1,32 @@
+{
+  "name": "qr-doorbell-backend",
+  "version": "1.0.0",
+  "description": "Backend for QR Doorbell system with Agora video calling",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "visitor": "node visitorServer.js",
+    "dev:visitor": "nodemon visitorServer.js",
+    "dev:all": "concurrently \"npm run dev\" \"npm run dev:visitor\""
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "firebase-admin": "^11.11.0",
+    "uuid": "^9.0.0",
+    "qrcode": "^1.5.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1",
+    "concurrently": "^8.2.0"
+  },
+  "keywords": [
+    "qr-doorbell",
+    "agora",
+    "video-calling",
+    "firebase"
+  ],
+  "author": "Your Name",
+  "license": "MIT"
+}
