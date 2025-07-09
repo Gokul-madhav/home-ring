@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QR Doorbell - Visitor</title>
+    <title>HomeRing</title>
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.19.3.js"></script>
     <style>
         * {
@@ -341,7 +341,7 @@
 
             try {
                 // Initiate call
-                const response = await fetch(`http://localhost:5000/api/door/call/${doorID}`, {
+                const response = await fetch(`https://homering.onrender.com/api/door/call/${doorID}`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -452,7 +452,7 @@
         async function endCall() {
             try {
                 if (callID) {
-                    await fetch(`http://localhost:5000/api/door/call/${callID}/end`, {
+                    await fetch(`https://homering.onrender.com/api/door/call/${callID}/end`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -492,7 +492,7 @@
             if (!callID) return;
 
             try {
-                const response = await fetch(`http://localhost:5000/api/door/call/${callID}/status`);
+                const response = await fetch(`https://homering.onrender.com/api/door/call/${callID}/status`);
                 const data = await response.json();
 
                 if (data.status === 'accepted') {
