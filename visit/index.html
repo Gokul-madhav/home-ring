@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -212,8 +213,13 @@
         }
 
         @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
         }
 
         .hidden {
@@ -221,19 +227,20 @@
         }
     </style>
 </head>
+
 <body>
     <div class="container">
         <div id="welcome-screen">
             <div class="logo">🏠</div>
             <h1>QR Doorbell</h1>
             <p class="subtitle">Ring the doorbell to connect with the homeowner</p>
-            
+
             <form id="visitor-form">
                 <div class="form-group">
                     <label for="visitor-name">Your Name</label>
                     <input type="text" id="visitor-name" placeholder="Enter your name" required>
                 </div>
-                
+
                 <button type="submit" class="btn" id="ring-btn">
                     <span id="ring-text">🔔 Ring Doorbell</span>
                     <span id="ring-loading" class="loading hidden"></span>
@@ -247,7 +254,7 @@
                 <span id="status-text">Ringing...</span>
                 <span id="status-loading" class="loading"></span>
             </div>
-            
+
             <div class="video-grid">
                 <div class="video-item">
                     <video id="local-video" autoplay muted></video>
@@ -258,7 +265,7 @@
                     <div class="video-label">Homeowner</div>
                 </div>
             </div>
-            
+
             <div class="controls">
                 <button class="control-btn secondary" id="toggle-video" title="Toggle Video">
                     📹
@@ -275,9 +282,9 @@
 
     <script>
         // Get door ID from URL parameters
-        const urlParams = new URLSearchParams(window.location.search);
-        const doorID = urlParams.get('door');
-        
+        const pathParts = window.location.pathname.split('/');
+        const doorID = pathParts[1] || null;
+
         if (!doorID) {
             alert('Invalid doorbell link. Please scan the QR code again.');
             window.close();
@@ -320,7 +327,7 @@
 
         async function handleRingDoorbell(e) {
             e.preventDefault();
-            
+
             const visitorName = document.getElementById('visitor-name').value.trim();
             if (!visitorName) {
                 alert('Please enter your name');
@@ -345,18 +352,18 @@
                 });
 
                 const data = await response.json();
-                
+
                 if (data.success) {
                     callID = data.callID;
                     channelName = data.channelName;
-                    
+
                     // Initialize Agora
                     await initializeAgora();
-                    
+
                     // Show video screen
                     welcomeScreen.style.display = 'none';
                     videoScreen.style.display = 'block';
-                    
+
                     // Start polling for call status
                     pollCallStatus();
                 } else {
@@ -365,7 +372,7 @@
             } catch (error) {
                 console.error('Error ringing doorbell:', error);
                 alert('Failed to ring doorbell. Please try again.');
-                
+
                 // Reset button state
                 ringText.classList.remove('hidden');
                 ringLoading.classList.add('hidden');
@@ -376,7 +383,7 @@
         async function initializeAgora() {
             try {
                 client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-                
+
                 // Set up event handlers
                 client.on("user-published", handleUserPublished);
                 client.on("user-unpublished", handleUserUnpublished);
@@ -384,14 +391,14 @@
 
                 // Join the channel
                 await client.join(agoraAppId, channelName, null, null);
-                
+
                 // Create and publish local tracks
                 [localAudioTrack, localVideoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
                 await client.publish([localAudioTrack, localVideoTrack]);
-                
+
                 // Play local video
                 localVideoTrack.play(localVideo);
-                
+
                 updateStatus('Waiting for homeowner to answer...', 'ringing');
             } catch (error) {
                 console.error('Error initializing Agora:', error);
@@ -401,7 +408,7 @@
 
         async function handleUserPublished(user, mediaType) {
             await client.subscribe(user, mediaType);
-            
+
             if (mediaType === "video") {
                 remoteVideoTrack = user.videoTrack;
                 remoteVideoContainer.style.display = 'block';
@@ -411,7 +418,7 @@
                 remoteAudioTrack = user.audioTrack;
                 remoteAudioTrack.play();
             }
-            
+
             updateStatus('Connected with homeowner', 'connected');
         }
 
@@ -475,7 +482,7 @@
         function updateStatus(message, type) {
             statusText.textContent = message;
             status.className = `status ${type}`;
-            
+
             if (type === 'connected') {
                 statusLoading.classList.add('hidden');
             }
@@ -483,11 +490,11 @@
 
         async function pollCallStatus() {
             if (!callID) return;
-            
+
             try {
                 const response = await fetch(`http://localhost:5000/api/door/call/${callID}/status`);
                 const data = await response.json();
-                
+
                 if (data.status === 'accepted') {
                     updateStatus('Call accepted!', 'connected');
                 } else if (data.status === 'ended') {
@@ -509,4 +516,5 @@
         window.addEventListener('beforeunload', cleanup);
     </script>
 </body>
+
 </html>
