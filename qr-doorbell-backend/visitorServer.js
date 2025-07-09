@@ -1,48 +1,28 @@
-const express = require('express');
-const path = require('path');
-const cors = require('cors');
+const express = require("express");
+const cors = require("cors");
+const path = require("path");
+const fs = require("fs");
+const doorRoutes = require("./routes/doorRoutes");
 
 const app = express();
-const PORT = process.env.VISITOR_PORT || 3000;
-
-// Enable CORS
 app.use(cors());
+app.use(express.json());
 
 // Serve static files from the visit directory
-app.use(express.static(path.join(__dirname, '../visit')));
+app.use(express.static(path.join(__dirname, "../visit")));
 
-// Route to serve the visitor page
-app.get('/:doorID', (req, res) => {
-  const doorID = req.params.doorID;
-  
-  // Read the HTML file and inject the door ID
-  const fs = require('fs');
-  const htmlPath = path.join(__dirname, '../visit/index.html');
-  
-  fs.readFile(htmlPath, 'utf8', (err, data) => {
-    if (err) {
-      console.error('Error reading HTML file:', err);
-      return res.status(500).send('Error loading page');
-    }
-    
-    // Inject the door ID into the URL
-    const modifiedHtml = data.replace(
-      'const doorID = urlParams.get(\'door\');',
-      `const doorID = '${doorID}';`
-    );
-    
-    res.send(modifiedHtml);
+// API routes
+app.use("/api/door", doorRoutes);
+
+// Dynamic route for /:doorID (serves visitor page for any doorID)
+app.get("/:doorID", (req, res) => {
+  const htmlPath = path.join(__dirname, "../visit/index.html");
+  fs.readFile(htmlPath, "utf8", (err, data) => {
+    if (err) return res.status(500).send("Error loading page");
+    // Optionally inject doorID into the HTML here
+    res.send(data);
   });
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', service: 'visitor-server' });
-});
-
-app.listen(PORT, () => {
-  console.log(`Visitor server running on port ${PORT}`);
-  console.log(`Access visitor interface at: http://localhost:${PORT}/[doorID]`);
-});
-
-module.exports = app; 
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
