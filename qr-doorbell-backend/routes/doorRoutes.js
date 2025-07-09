@@ -6,7 +6,7 @@ const generateQR = require("../utils/qrGenerator");
 
 // Agora configuration
 const AGORA_APP_ID = "e99f68decc74469e93db09796e5ccd8c";
-const AGORA_APP_CERTIFICATE = "your_agora_app_certificate"; // Add your Agora app certificate
+const AGORA_APP_CERTIFICATE = "42c79730f2a04138a26c5a8339e005d8"; // Add your Agora app certificate
 
 // ✅ Generate new QR code and store in RTDB
 router.post("/generate", async (req, res) => {
@@ -27,17 +27,6 @@ router.post("/generate", async (req, res) => {
   }
 });
 
-// ✅ Get door status from RTDB
-router.get("/:doorID", async (req, res) => {
-  const { doorID } = req.params;
-  const snapshot = await db.ref(`doors/${doorID}`).once("value");
-
-  if (!snapshot.exists()) {
-    return res.status(404).json({ message: "Invalid door ID" });
-  }
-
-  res.json(snapshot.val());
-});
 
 // ✅ Activate QR code for doorbell
 router.post("/activate", async (req, res) => {
@@ -241,6 +230,19 @@ router.post("/call/:callID/end", async (req, res) => {
     console.error("Call ending failed:", error);
     res.status(500).json({ error: "Server error" });
   }
+});
+
+
+// ✅ Get door status from RTDB
+router.get("/:doorID", async (req, res) => {
+  const { doorID } = req.params;
+  const snapshot = await db.ref(`doors/${doorID}`).once("value");
+
+  if (!snapshot.exists()) {
+    return res.status(404).json({ message: "Invalid door ID" });
+  }
+
+  res.json(snapshot.val());
 });
 
 // Helper function to generate Agora token
