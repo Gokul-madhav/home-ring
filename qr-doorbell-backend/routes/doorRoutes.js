@@ -33,7 +33,7 @@ router.post("/activate", async (req, res) => {
   try {
     const { doorID, ownerID, phoneNumber } = req.body;
 
-    if (!doorID || !ownerID || !phoneNumber) {
+    if (!doorID || !ownerID) {
       return res.status(400).json({ error: "Missing required fields" });
     }
 
