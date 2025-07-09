@@ -166,7 +166,8 @@ router.post("/call/:doorID", async (req, res) => {
       visitorName: visitorName,
       status: 'ringing',
       createdAt: new Date().toISOString(),
-      ownerPhone: doorData.ownerPhone
+      ownerPhone: doorData.ownerPhone || null, // <--- Fix: use null if undefined
+      ownerID: doorData.claimedBy || null
     });
 
     // Update doorbell last activity
