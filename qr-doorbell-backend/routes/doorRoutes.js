@@ -78,6 +78,26 @@ router.post("/activate", async (req, res) => {
   }
 });
 
+// ✅ Get incoming calls for owner  
+router.get("/call/incoming", async (req, res) => {
+  try {
+    const { ownerID } = req.query;
+    if (!ownerID) return res.status(400).json({ error: "Missing ownerID" });
+
+    const snapshot = await db.ref("calls").orderByChild("ownerID").equalTo(ownerID).once("value");
+    const calls = [];
+    snapshot.forEach(child => {
+      const call = child.val();
+      if (call.status === "ringing") {
+        calls.push({ ...call, callID: child.key });
+      }
+    });
+    res.json({ calls });
+  } catch (error) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // ✅ Get user's doorbells
 router.get("/my-doorbells", async (req, res) => {
   try {
@@ -235,24 +255,7 @@ router.post("/call/:callID/end", async (req, res) => {
 });
 
 // ✅ Get incoming calls for owner
-router.get("/call/incoming", async (req, res) => {
-  try {
-    const { ownerID } = req.query;
-    if (!ownerID) return res.status(400).json({ error: "Missing ownerID" });
 
-    const snapshot = await db.ref("calls").orderByChild("ownerID").equalTo(ownerID).once("value");
-    const calls = [];
-    snapshot.forEach(child => {
-      const call = child.val();
-      if (call.status === "ringing") {
-        calls.push({ ...call, callID: child.key });
-      }
-    });
-    res.json({ calls });
-  } catch (error) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
 
 // ✅ Get door status from RTDB
