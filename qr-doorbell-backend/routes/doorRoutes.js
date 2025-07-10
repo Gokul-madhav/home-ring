@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require("../firebase");
 const { v4: uuidv4 } = require("uuid");
 const generateQR = require("../utils/qrGenerator");
+const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
 
 // Agora configuration
 const AGORA_APP_ID = "e99f68decc74469e93db09796e5ccd8c";
@@ -185,6 +186,7 @@ router.post("/call/:doorID", async (req, res) => {
       channelName: channelName,
       visitorName: visitorName,
       status: 'ringing',
+      token: token,
       createdAt: new Date().toISOString(),
       ownerPhone: doorData.ownerPhone || null, // <--- Fix: use null if undefined
       ownerID: doorData.claimedBy || null
@@ -272,9 +274,14 @@ router.get("/:doorID", async (req, res) => {
 
 // Helper function to generate Agora token
 function generateAgoraToken(channelName) {
-  // TODO: Implement proper Agora token generation
-  // For now, return null (no token required for testing)
-  return null;
+  const appID = "e99f68decc74469e93db09796e5ccd8c";
+  const appCertificate = "42c79730f2a04138a26c5a8339e005d8";
+  const uid = 0; // use 0 for dynamic UID
+  const role = RtcRole.PUBLISHER;
+  const expireTimeSeconds = 3600; // 1 hour
+  const currentTimestamp = Math.floor(Date.now() / 1000);
+  const privilegeExpireTime = currentTimestamp + expireTimeSeconds;
+  return RtcTokenBuilder.buildTokenWithUid(appID, appCertificate, channelName, uid, role, privilegeExpireTime);
 }
 
 module.exports = router;
