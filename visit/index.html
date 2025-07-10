@@ -405,6 +405,9 @@
                         remoteVideoTrack.play("remote-video");
                         console.log("Playing remote video for user:", user.uid);
                     }
+                    if (mediaType === "audio") {
+                        user.audioTrack.play();
+                    }
                 });
                 client.on("user-unpublished", handleUserUnpublished);
                 client.on("user-left", handleUserLeft);
