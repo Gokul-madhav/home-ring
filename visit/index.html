@@ -412,9 +412,7 @@
                 // Create and publish local tracks
                 [localAudioTrack, localVideoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
                 await client.publish([localAudioTrack, localVideoTrack]);
-
-                // Play local video
-                localVideoTrack.play(localVideo);
+                localVideoTrack.play("local-video");
 
                 updateStatus('Waiting for homeowner to answer...', 'ringing');
             } catch (error) {
