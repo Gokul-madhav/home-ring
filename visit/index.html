@@ -225,6 +225,69 @@
         .hidden {
             display: none;
         }
+        .video-bg {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 1;
+            background: #000;
+        }
+        .local-video-overlay {
+            position: fixed;
+            top: 32px;
+            right: 24px;
+            z-index: 2;
+            background: rgba(0,0,0,0.2);
+            border-radius: 12px;
+            padding: 2px;
+        }
+        .status-bar {
+            position: fixed;
+            top: 16px;
+            left: 0;
+            right: 0;
+            z-index: 3;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: #fff;
+            font-size: 18px;
+            font-weight: 500;
+            text-shadow: 0 2px 8px #0008;
+        }
+        .controls-bar {
+            position: fixed;
+            bottom: 40px;
+            left: 0;
+            right: 0;
+            z-index: 4;
+            display: flex;
+            justify-content: center;
+            gap: 32px;
+        }
+        .control-btn {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 8px #0002;
+        }
+        .control-btn.primary {
+            background: #dc3545;
+            color: white;
+        }
+        .control-btn.secondary {
+            background: #6c757d;
+            color: white;
+        }
+        .control-btn:hover {
+            transform: scale(1.1);
+        }
     </style>
 </head>
 
@@ -249,29 +312,19 @@
         </div>
 
         <div id="video-screen" class="video-container">
-            <h2>Video Call</h2>
-            <div id="status" class="status ringing">
+            <div class="video-bg">
+                <video id="remote-video" autoplay playsinline style="width:100%;height:100%;object-fit:cover;"></video>
+            </div>
+            <div class="local-video-overlay">
+                <video id="local-video" autoplay muted playsinline style="width:100px;height:140px;border-radius:12px;border:2px solid #fff;object-fit:cover;"></video>
+            </div>
+            <div class="status-bar">
                 <span id="status-text">Ringing...</span>
                 <span id="status-loading" class="loading"></span>
             </div>
-
-            <div class="video-grid">
-                <div class="video-item">
-                    <video id="local-video" autoplay muted playsinline></video>
-                    <div class="video-label">You</div>
-                </div>
-                <div class="video-item" id="remote-video-container">
-                    <video id="remote-video" autoplay playsinline></video>
-                    <div class="video-label">Homeowner</div>
-                </div>
-            </div>
-
-            <div class="controls">
-                <button class="control-btn secondary" id="toggle-video" title="Toggle Video">
-                    📹
-                </button>
-                <button class="control-btn secondary" id="toggle-audio" title="Toggle Audio">
-                    🎤
+            <div class="controls-bar">
+                <button class="control-btn secondary" id="switch-camera" title="Switch Camera">
+                    🔄
                 </button>
                 <button class="control-btn primary" id="end-call" title="End Call">
                     📞
@@ -330,12 +383,13 @@
         const toggleVideoBtn = document.getElementById('toggle-video');
         const toggleAudioBtn = document.getElementById('toggle-audio');
         const endCallBtn = document.getElementById('end-call');
+        const switchCameraBtn = document.getElementById('switch-camera');
 
         // Event listeners
         visitorForm.addEventListener('submit', handleRingDoorbell);
         toggleVideoBtn.addEventListener('click', toggleVideo);
-        toggleAudioBtn.addEventListener('click', toggleAudio);
         endCallBtn.addEventListener('click', endCall);
+        switchCameraBtn.addEventListener('click', switchCamera);
 
         async function handleRingDoorbell(e) {
             e.preventDefault();
@@ -466,11 +520,17 @@
             }
         }
 
-        async function toggleAudio() {
-            if (localAudioTrack) {
-                isAudioEnabled = !isAudioEnabled;
-                localAudioTrack.setEnabled(isAudioEnabled);
-                toggleAudioBtn.textContent = isAudioEnabled ? '🎤' : '🚫';
+        async function switchCamera() {
+            if (localVideoTrack && localVideoTrack.switchDevice) {
+                // If using Agora Web SDK 4.x+, use setDevice for camera switching
+                const devices = await AgoraRTC.getCameras();
+                if (devices.length > 1) {
+                    const currentId = localVideoTrack.getTrackLabel();
+                    const next = devices.find(d => d.label !== currentId);
+                    if (next) {
+                        await localVideoTrack.setDevice(next.deviceId);
+                    }
+                }
             }
         }
 
