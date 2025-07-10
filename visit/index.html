@@ -397,7 +397,15 @@
                 client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
 
                 // Set up event handlers
-                client.on("user-published", handleUserPublished);
+                client.on("user-published", async (user, mediaType) => {
+                    console.log("Remote user published:", user.uid, mediaType);
+                    await client.subscribe(user, mediaType);
+                    if (mediaType === "video") {
+                        remoteVideoTrack = user.videoTrack;
+                        remoteVideoTrack.play("remote-video");
+                        console.log("Playing remote video for user:", user.uid);
+                    }
+                });
                 client.on("user-unpublished", handleUserUnpublished);
                 client.on("user-left", handleUserLeft);
 
