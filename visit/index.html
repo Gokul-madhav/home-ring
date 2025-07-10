@@ -509,6 +509,8 @@
 
                 if (data.status === 'accepted') {
                     updateStatus('Call accepted!', 'connected');
+                    // Only now, join the channel and request camera/mic
+                    await initializeAgora();
                 } else if (data.status === 'ended') {
                     updateStatus('Call ended', 'error');
                     setTimeout(() => {
