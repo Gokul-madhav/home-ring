@@ -272,6 +272,24 @@ router.get("/:doorID", async (req, res) => {
   res.json(snapshot.val());
 });
 
+// ✅ Get token for a call
+router.get("/call/:callID/token", async (req, res) => {
+  try {
+    const { callID } = req.params;
+    const snapshot = await db.ref(`calls/${callID}`).once("value");
+    if (!snapshot.exists()) {
+      return res.status(404).json({ error: "Call not found" });
+    }
+    const call = snapshot.val();
+    if (!call.token) {
+      return res.status(404).json({ error: "Token not found" });
+    }
+    res.json({ token: call.token });
+  } catch (error) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // Helper function to generate Agora token
 function generateAgoraToken(channelName) {
   const appID = "e99f68decc74469e93db09796e5ccd8c";
