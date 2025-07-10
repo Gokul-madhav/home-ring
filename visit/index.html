@@ -257,11 +257,11 @@
 
             <div class="video-grid">
                 <div class="video-item">
-                    <video id="local-video" autoplay muted></video>
+                    <video id="local-video" autoplay muted playsinline></video>
                     <div class="video-label">You</div>
                 </div>
-                <div class="video-item" id="remote-video-container" style="display: none;">
-                    <video id="remote-video" autoplay></video>
+                <div class="video-item" id="remote-video-container">
+                    <video id="remote-video" autoplay playsinline></video>
                     <div class="video-label">Homeowner</div>
                 </div>
             </div>
@@ -428,7 +428,6 @@
 
             if (mediaType === "video") {
                 remoteVideoTrack = user.videoTrack;
-                remoteVideoContainer.style.display = 'block';
                 remoteVideoTrack.play(remoteVideo);
             }
             if (mediaType === "audio") {
