@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HomeRing</title>
+    <title>QR Doorbell - Visitor</title>
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.19.3.js"></script>
     <style>
         * {
@@ -281,6 +281,18 @@
     </div>
 
     <script>
+        async function requestPermissionsOnLoad() {
+            try {
+                await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                // Permissions granted, you can optionally show a message or icon
+            } catch (err) {
+                alert('Camera and microphone access are required for the video call.');
+            }
+        }
+
+        // Call this function as soon as the page loads
+        requestPermissionsOnLoad();
+
         // Get door ID from URL parameters
         const pathParts = window.location.pathname.split('/');
         const doorID = pathParts[1] || null;
