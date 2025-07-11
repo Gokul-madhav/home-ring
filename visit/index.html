@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>QR Doorbell - Visitor</title>
+    <title>HomeRing - Visitor</title>
     <script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.19.3.js"></script>
     <style>
         * {
@@ -280,7 +280,7 @@
     <div class="container">
         <div id="welcome-screen">
             <div class="logo">🏠</div>
-            <h1>QR Doorbell</h1>
+            <h1>HomeRing Doorbell</h1>
             <p class="subtitle">Ring the doorbell to connect with the homeowner</p>
 
             <form id="visitor-form">
@@ -579,7 +579,15 @@
         }
 
         // Handle page unload
-        window.addEventListener('beforeunload', cleanup);
+        window.addEventListener('beforeunload', function() {
+            if (callID) {
+                // Use sendBeacon for reliable backend notification
+                navigator.sendBeacon(
+                    `https://homering.onrender.com/api/door/call/${callID}/end`
+                );
+            }
+            cleanup();
+        });
     </script>
 </body>
 
