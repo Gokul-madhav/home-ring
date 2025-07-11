@@ -498,20 +498,21 @@
             updateStatus('Homeowner left the call', 'error');
             setTimeout(() => {
                 endCall();
-            }, 3000);
+            }, 1000);
         }
 
         async function switchCamera() {
-            if (localVideoTrack && localVideoTrack.switchDevice) {
-                // This works if multiple cameras are available
+            if (localVideoTrack && localVideoTrack.setDevice) {
                 const devices = await AgoraRTC.getCameras();
                 if (devices.length > 1) {
-                    const currentDeviceId = localVideoTrack.getTrackLabel();
-                    const nextDevice = devices.find(d => d.deviceId !== localVideoTrack.getTrackId());
+                    const currentDeviceId = localVideoTrack.getTrackId();
+                    const nextDevice = devices.find(d => d.deviceId !== currentDeviceId);
                     if (nextDevice) {
                         await localVideoTrack.setDevice(nextDevice.deviceId);
                     }
                 }
+            } else {
+                alert('Camera switching is not supported on this device/browser.');
             }
         }
 
@@ -592,6 +593,16 @@
             }
             cleanup();
         });
+
+        function attachVideoEventListeners() {
+            const switchCameraBtn = document.getElementById('switch-camera');
+            const endCallBtn = document.getElementById('end-call');
+            if (switchCameraBtn) switchCameraBtn.onclick = switchCamera;
+            if (endCallBtn) endCallBtn.onclick = endCall;
+        }
+
+        // Call this after showing the video UI
+        attachVideoEventListeners();
     </script>
 </body>
 
