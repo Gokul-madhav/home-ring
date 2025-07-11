@@ -302,4 +302,26 @@ function generateAgoraToken(channelName) {
   return RtcTokenBuilder.buildTokenWithUid(appID, appCertificate, channelName, uid, role, privilegeExpireTime);
 }
 
+// Scheduled cleanup for orphaned calls
+setInterval(async () => {
+  try {
+    const now = Date.now();
+    const tenMinutes = 5 * 60 * 1000;
+    const snapshot = await db.ref('calls').once('value');
+    snapshot.forEach(child => {
+      const call = child.val();
+      if ((call.status === 'ringing' || call.status === 'accepted') && call.createdAt) {
+        const createdAt = new Date(call.createdAt).getTime();
+        if (now - createdAt > tenMinutes) {
+          db.ref(`calls/${child.key}/status`).set('ended');
+          db.ref(`calls/${child.key}/endedAt`).set(new Date().toISOString());
+          console.log(`Cleaned up orphaned call: ${child.key}`);
+        }
+      }
+    });
+  } catch (err) {
+    console.error('Error during call cleanup:', err);
+  }
+}, 5 * 60 * 1000); // Run every 5 minutes
+
 module.exports = router;
