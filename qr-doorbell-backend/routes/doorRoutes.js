@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const db = require("../firebase");
+const { db, messaging } = require("../firebase");
 const { v4: uuidv4 } = require("uuid");
 const generateQR = require("../utils/qrGenerator");
 const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
@@ -78,6 +78,23 @@ router.post("/activate", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+// ✅ Register/Update FCM token for a user
+router.post('/push/register', async (req, res) => {
+  try {
+    const { ownerID, token } = req.body;
+    if (!ownerID || !token) return res.status(400).json({ error: 'Missing ownerID or token' });
+
+    const ref = db.ref(`users/${ownerID}/fcmTokens`);
+    const snap = await ref.once('value');
+    const tokens = snap.exists() ? snap.val() : [];
+    if (!tokens.includes(token)) tokens.push(token);
+    await ref.set(tokens);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to register token' });
+  }
+});
+
 
 // ✅ Get incoming calls for owner  
 router.get("/call/incoming", async (req, res) => {
@@ -195,6 +212,28 @@ router.post("/call/:doorID", async (req, res) => {
     // Update doorbell last activity
     await db.ref(`doors/${doorID}/lastActivity`).set(new Date().toISOString());
     await db.ref(`users/${doorData.claimedBy}/doorbells/${doorID}/lastActivity`).set(new Date().toISOString());
+
+    // Notify owner via FCM
+    try {
+      const tokensSnap = await db.ref(`users/${doorData.claimedBy}/fcmTokens`).once('value');
+      if (tokensSnap.exists()) {
+        const tokens = tokensSnap.val();
+        const message = {
+          notification: { title: 'Incoming Call', body: `Visitor: ${visitorName || ''}` },
+          data: {
+            type: 'incoming_call',
+            callID: callID,
+            channelName: channelName,
+            token: token,
+            visitorName: visitorName || 'Visitor'
+          },
+          tokens: Array.isArray(tokens) ? tokens : [tokens]
+        };
+        await messaging.sendEachForMulticast(message);
+      }
+    } catch (err) {
+      console.error('FCM send failed', err);
+    }
 
     res.json({
       success: true,
