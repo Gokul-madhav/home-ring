@@ -227,6 +227,8 @@ router.post("/call/:doorID", async (req, res) => {
             token: token,
             visitorName: visitorName || 'Visitor'
           },
+          android: { priority: 'high' },
+          apns: { headers: { 'apns-priority': '10' } },
           tokens: Array.isArray(tokens) ? tokens : [tokens]
         };
         await messaging.sendEachForMulticast(message);
