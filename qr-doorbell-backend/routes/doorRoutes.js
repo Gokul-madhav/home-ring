@@ -95,6 +95,112 @@ router.post('/push/register', async (req, res) => {
   }
 });
 
+// ✅ Device session management for one-user-per-device
+router.post('/device/bind', async (req, res) => {
+  try {
+    const { userID, deviceID } = req.body;
+    if (!userID || !deviceID) return res.status(400).json({ error: 'Missing userID or deviceID' });
+
+    // Check if user is already logged in on another device
+    const userSessionRef = db.ref(`userSessions/${userID}`);
+    const userSessionSnap = await userSessionRef.once('value');
+    
+    if (userSessionSnap.exists()) {
+      const existingSession = userSessionSnap.val();
+      if (existingSession.deviceID !== deviceID) {
+        return res.status(409).json({ 
+          error: 'User already logged in on another device',
+          existingDeviceID: existingSession.deviceID,
+          loginTime: existingSession.loginTime
+        });
+      }
+    }
+
+    // Check if device is already bound to another user
+    const deviceSessionRef = db.ref(`deviceSessions/${deviceID}`);
+    const deviceSessionSnap = await deviceSessionRef.once('value');
+    
+    if (deviceSessionSnap.exists()) {
+      const existingDeviceSession = deviceSessionSnap.val();
+      if (existingDeviceSession.userID !== userID) {
+        return res.status(409).json({ 
+          error: 'Device already bound to another user',
+          existingUserID: existingDeviceSession.userID,
+          loginTime: existingDeviceSession.loginTime
+        });
+      }
+    }
+
+    // Create/update session bindings
+    const sessionData = {
+      userID: userID,
+      deviceID: deviceID,
+      loginTime: new Date().toISOString(),
+      lastActivity: new Date().toISOString()
+    };
+
+    await userSessionRef.set(sessionData);
+    await deviceSessionRef.set(sessionData);
+
+    res.json({ success: true, message: 'Device bound successfully' });
+  } catch (e) {
+    console.error('Device binding failed:', e);
+    res.status(500).json({ error: 'Failed to bind device' });
+  }
+});
+
+// ✅ Check device session status
+router.get('/device/status', async (req, res) => {
+  try {
+    const { userID, deviceID } = req.query;
+    if (!userID || !deviceID) return res.status(400).json({ error: 'Missing userID or deviceID' });
+
+    const userSessionRef = db.ref(`userSessions/${userID}`);
+    const userSessionSnap = await userSessionRef.once('value');
+    
+    if (!userSessionSnap.exists()) {
+      return res.json({ isLoggedIn: false, message: 'No active session' });
+    }
+
+    const session = userSessionSnap.val();
+    if (session.deviceID !== deviceID) {
+      return res.json({ 
+        isLoggedIn: false, 
+        message: 'User logged in on different device',
+        currentDeviceID: session.deviceID,
+        loginTime: session.loginTime
+      });
+    }
+
+    res.json({ 
+      isLoggedIn: true, 
+      loginTime: session.loginTime,
+      lastActivity: session.lastActivity
+    });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to check device status' });
+  }
+});
+
+// ✅ Unbind device (logout)
+router.post('/device/unbind', async (req, res) => {
+  try {
+    const { userID, deviceID } = req.body;
+    if (!userID || !deviceID) return res.status(400).json({ error: 'Missing userID or deviceID' });
+
+    // Remove user session
+    await db.ref(`userSessions/${userID}`).remove();
+    
+    // Remove device session
+    await db.ref(`deviceSessions/${deviceID}`).remove();
+
+    res.json({ success: true, message: 'Device unbound successfully' });
+  } catch (e) {
+    console.error('Device unbinding failed:', e);
+    res.status(500).json({ error: 'Failed to unbind device' });
+  }
+});
+
 
 // ✅ Get incoming calls for owner  
 router.get("/call/incoming", async (req, res) => {
