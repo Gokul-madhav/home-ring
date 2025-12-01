@@ -95,6 +95,40 @@ router.post('/push/register', async (req, res) => {
   }
 });
 
+// ✅ Unregister FCM token for a user (logout)
+router.post('/push/unregister', async (req, res) => {
+  try {
+    const { ownerID, token } = req.body;
+    if (!ownerID || !token) return res.status(400).json({ error: 'Missing ownerID or token' });
+
+    const ref = db.ref(`users/${ownerID}/fcmTokens`);
+    const snap = await ref.once('value');
+    if (snap.exists()) {
+      const tokens = snap.val();
+      // Handle both array and single token cases
+      let updatedTokens;
+      if (Array.isArray(tokens)) {
+        updatedTokens = tokens.filter(t => t !== token);
+      } else if (tokens === token) {
+        updatedTokens = [];
+      } else {
+        // Single token that doesn't match - keep it
+        updatedTokens = [tokens];
+      }
+      // Remove the node if no tokens remain, otherwise update with filtered array
+      if (updatedTokens.length === 0) {
+        await ref.remove();
+      } else {
+        await ref.set(updatedTokens);
+      }
+    }
+    res.json({ success: true });
+  } catch (e) {
+    console.error('FCM unregister failed:', e);
+    res.status(500).json({ error: 'Failed to unregister token' });
+  }
+});
+
 // ✅ Device session management for one-user-per-device
 router.post('/device/bind', async (req, res) => {
   try {
@@ -141,6 +175,12 @@ router.post('/device/bind', async (req, res) => {
 
     await userSessionRef.set(sessionData);
     await deviceSessionRef.set(sessionData);
+    await db.ref(`users/${userID}/presence`).set({
+      online: true,
+      deviceID: deviceID,
+      lastSeen: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
 
     res.json({ success: true, message: 'Device bound successfully' });
   } catch (e) {
@@ -193,6 +233,13 @@ router.post('/device/unbind', async (req, res) => {
     
     // Remove device session
     await db.ref(`deviceSessions/${deviceID}`).remove();
+    
+    await db.ref(`users/${userID}/presence`).set({
+      online: false,
+      deviceID: null,
+      lastSeen: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
 
     res.json({ success: true, message: 'Device unbound successfully' });
   } catch (e) {
@@ -295,6 +342,26 @@ router.post("/call/:doorID", async (req, res) => {
     if (!doorData.claimed || doorData.status !== 'active') {
       return res.status(400).json({ error: "Doorbell not active" });
     }
+    if (!doorData.claimedBy) {
+      return res.status(400).json({ error: "Doorbell owner not set" });
+    }
+
+    const ownerID = doorData.claimedBy;
+    const ownerSessionSnap = await db.ref(`userSessions/${ownerID}`).once('value');
+    if (!ownerSessionSnap.exists()) {
+      return res.status(409).json({ error: "Owner is offline" });
+    }
+    const tokensSnap = await db.ref(`users/${ownerID}/fcmTokens`).once('value');
+    if (!tokensSnap.exists()) {
+      return res.status(409).json({ error: "Owner has no registered devices" });
+    }
+    const rawTokens = tokensSnap.val();
+    const tokenList = Array.isArray(rawTokens)
+      ? rawTokens.filter(Boolean)
+      : (rawTokens ? [rawTokens] : []);
+    if (tokenList.length === 0) {
+      return res.status(409).json({ error: "Owner has no registered devices" });
+    }
 
     // Generate unique channel name for this call
     const channelName = `doorbell_${doorID}_${Date.now()}`;
@@ -312,7 +379,7 @@ router.post("/call/:doorID", async (req, res) => {
       token: token,
       createdAt: new Date().toISOString(),
       ownerPhone: doorData.ownerPhone || null, // <--- Fix: use null if undefined
-      ownerID: doorData.claimedBy || null
+      ownerID: ownerID || null
     });
 
     // Update doorbell last activity
@@ -321,24 +388,20 @@ router.post("/call/:doorID", async (req, res) => {
 
     // Notify owner via FCM
     try {
-      const tokensSnap = await db.ref(`users/${doorData.claimedBy}/fcmTokens`).once('value');
-      if (tokensSnap.exists()) {
-        const tokens = tokensSnap.val();
-        const message = {
-          notification: { title: 'Incoming Call', body: `Visitor: ${visitorName || ''}` },
-          data: {
-            type: 'incoming_call',
-            callID: callID,
-            channelName: channelName,
-            token: token,
-            visitorName: visitorName || 'Visitor'
-          },
-          android: { priority: 'high' },
-          apns: { headers: { 'apns-priority': '10' } },
-          tokens: Array.isArray(tokens) ? tokens : [tokens]
-        };
-        await messaging.sendEachForMulticast(message);
-      }
+      const message = {
+        notification: { title: 'Incoming Call', body: `Visitor: ${visitorName || ''}` },
+        data: {
+          type: 'incoming_call',
+          callID: callID,
+          channelName: channelName,
+          token: token,
+          visitorName: visitorName || 'Visitor'
+        },
+        android: { priority: 'high' },
+        apns: { headers: { 'apns-priority': '10' } },
+        tokens: tokenList
+      };
+      await messaging.sendEachForMulticast(message);
     } catch (err) {
       console.error('FCM send failed', err);
     }
