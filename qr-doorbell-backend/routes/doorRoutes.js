@@ -371,15 +371,27 @@ router.post("/call/:doorID", async (req, res) => {
 
     // Store call information
     const callID = uuidv4();
+    const createdAt = new Date().toISOString();
     await db.ref(`calls/${callID}`).set({
       doorID: doorID,
       channelName: channelName,
       visitorName: visitorName,
       status: 'ringing',
       token: token,
-      createdAt: new Date().toISOString(),
-      ownerPhone: doorData.ownerPhone || null, // <--- Fix: use null if undefined
+      createdAt: createdAt,
+      ownerPhone: doorData.ownerPhone || null,
       ownerID: ownerID || null
+    });
+
+    // Create initial call log entry in user's call logs
+    await db.ref(`users/${ownerID}/callLogs/${callID}`).set({
+      callID: callID,
+      visitorName: visitorName || 'Visitor',
+      status: 'ringing',
+      doorID: doorID,
+      channelName: channelName,
+      createdAt: createdAt,
+      updatedAt: createdAt
     });
 
     // Update doorbell last activity
@@ -442,7 +454,26 @@ router.post("/call/:callID/accept", async (req, res) => {
   try {
     const { callID } = req.params;
     
+    // Get call data to find ownerID
+    const callSnap = await db.ref(`calls/${callID}`).once('value');
+    if (!callSnap.exists()) {
+      return res.status(404).json({ error: "Call not found" });
+    }
+    const callData = callSnap.val();
+    const ownerID = callData.ownerID;
+    
+    const updatedAt = new Date().toISOString();
     await db.ref(`calls/${callID}/status`).set('accepted');
+    await db.ref(`calls/${callID}/acceptedAt`).set(updatedAt);
+    
+    // Update call log with approved status
+    if (ownerID) {
+      await db.ref(`users/${ownerID}/callLogs/${callID}`).update({
+        status: 'approved',
+        updatedAt: updatedAt,
+        acceptedAt: updatedAt
+      });
+    }
     
     res.json({ success: true, message: "Call accepted" });
   } catch (error) {
@@ -456,12 +487,101 @@ router.post("/call/:callID/end", async (req, res) => {
   try {
     const { callID } = req.params;
     
+    // Get call data to find ownerID and determine status
+    const callSnap = await db.ref(`calls/${callID}`).once('value');
+    if (!callSnap.exists()) {
+      return res.status(404).json({ error: "Call not found" });
+    }
+    const callData = callSnap.val();
+    const ownerID = callData.ownerID;
+    const currentStatus = callData.status;
+    
+    const endedAt = new Date().toISOString();
     await db.ref(`calls/${callID}/status`).set('ended');
-    await db.ref(`calls/${callID}/endedAt`).set(new Date().toISOString());
+    await db.ref(`calls/${callID}/endedAt`).set(endedAt);
+    
+    // Update call log - if call was ringing and now ended, mark as declined
+    // If call was accepted and now ended, keep it as approved but mark ended
+    if (ownerID) {
+      let logStatus = 'declined'; // Default for declined calls
+      if (currentStatus === 'accepted') {
+        logStatus = 'approved'; // Keep as approved if it was already accepted
+      }
+      
+      await db.ref(`users/${ownerID}/callLogs/${callID}`).update({
+        status: logStatus,
+        updatedAt: endedAt,
+        endedAt: endedAt
+      });
+    }
     
     res.json({ success: true, message: "Call ended" });
   } catch (error) {
     console.error("Call ending failed:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ✅ Get call logs for owner with counts
+router.get("/call/logs", async (req, res) => {
+  try {
+    const { ownerID, limit } = req.query;
+    if (!ownerID) return res.status(400).json({ error: "Missing ownerID" });
+
+    const limitNum = limit ? parseInt(limit, 10) : 50;
+    const callLogsRef = db.ref(`users/${ownerID}/callLogs`);
+    const snapshot = await callLogsRef.once('value');
+    
+    if (!snapshot.exists()) {
+      return res.json({
+        logs: [],
+        counts: {
+          approved: 0,
+          declined: 0,
+          total: 0
+        }
+      });
+    }
+
+    const logs = [];
+    let approvedCount = 0;
+    let declinedCount = 0;
+
+    snapshot.forEach((child) => {
+      const log = child.val();
+      log.callID = child.key;
+      
+      // Count approved and declined
+      if (log.status === 'approved') {
+        approvedCount++;
+      } else if (log.status === 'declined') {
+        declinedCount++;
+      }
+      
+      logs.push(log);
+      return false; // Continue iteration
+    });
+
+    // Sort by createdAt descending (most recent first)
+    logs.sort((a, b) => {
+      const dateA = new Date(a.createdAt || 0);
+      const dateB = new Date(b.createdAt || 0);
+      return dateB.getTime() - dateA.getTime();
+    });
+
+    // Apply limit
+    const limitedLogs = logs.slice(0, limitNum);
+
+    res.json({
+      logs: limitedLogs,
+      counts: {
+        approved: approvedCount,
+        declined: declinedCount,
+        total: logs.length
+      }
+    });
+  } catch (error) {
+    console.error("Failed to get call logs:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
