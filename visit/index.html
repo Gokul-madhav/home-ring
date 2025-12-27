@@ -226,6 +226,26 @@
             display: none;
         }
 
+        .call-ended-screen {
+            text-align: center;
+            padding: 40px 20px;
+        }
+
+        .call-ended-screen h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 28px;
+        }
+
+        .call-ended-message {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 30px;
+            border-radius: 15px;
+            color: #721c24;
+            font-size: 18px;
+            font-weight: 500;
+        }
+
         .video-call-layout {
             position: relative;
             width: 100%;
@@ -303,24 +323,33 @@
                 <span id="status-loading" class="loading"></span>
             </div>
 
-            <div class="video-call-layout">
-                <div class="owner-video-item">
-                    <video id="remote-video" autoplay playsinline></video>
-                    <div class="video-label">Homeowner</div>
+            <div id="video-call-content">
+                <div class="video-call-layout">
+                    <div class="owner-video-item">
+                        <video id="remote-video" autoplay playsinline></video>
+                        <div class="video-label">Homeowner</div>
+                    </div>
+                    <div class="visitor-video-item">
+                        <video id="local-video" autoplay muted playsinline></video>
+                        <div class="video-label">You</div>
+                    </div>
                 </div>
-                <div class="visitor-video-item">
-                    <video id="local-video" autoplay muted playsinline></video>
-                    <div class="video-label">You</div>
+
+                <div class="controls">
+                    <button class="control-btn secondary" id="switch-camera" title="Switch Camera">
+                        🔄
+                    </button>
+                    <button class="control-btn primary" id="end-call" title="End Call">
+                        📞
+                    </button>
                 </div>
             </div>
 
-            <div class="controls">
-                <button class="control-btn secondary" id="switch-camera" title="Switch Camera">
-                    🔄
-                </button>
-                <button class="control-btn primary" id="end-call" title="End Call">
-                    📞
-                </button>
+            <div id="call-ended-content" class="call-ended-screen hidden">
+                <h2>Video Call Ended</h2>
+                <div class="call-ended-message">
+                    The call has ended. Thank you!
+                </div>
             </div>
         </div>
     </div>
@@ -495,10 +524,7 @@
         }
 
         function handleUserLeft(user) {
-            updateStatus('Homeowner left the call', 'error');
-            setTimeout(() => {
-                endCall();
-            }, 1000);
+            showCallEnded();
         }
 
         async function switchCamera() {
@@ -530,19 +556,56 @@
                 console.error('Error ending call:', error);
             } finally {
                 cleanup();
-                window.close();
+                showCallEnded();
+            }
+        }
+
+        function showCallEnded() {
+            // Hide video call content
+            const videoCallContent = document.getElementById('video-call-content');
+            const callEndedContent = document.getElementById('call-ended-content');
+            const status = document.getElementById('status');
+            
+            if (videoCallContent) {
+                videoCallContent.classList.add('hidden');
+            }
+            if (status) {
+                status.classList.add('hidden');
+            }
+            if (callEndedContent) {
+                callEndedContent.classList.remove('hidden');
+            }
+            
+            // Stop polling
+            if (window.pollTimer) {
+                clearTimeout(window.pollTimer);
             }
         }
 
         function cleanup() {
             if (localAudioTrack) {
                 localAudioTrack.close();
+                localAudioTrack = null;
             }
             if (localVideoTrack) {
                 localVideoTrack.close();
+                localVideoTrack = null;
+            }
+            if (remoteAudioTrack) {
+                remoteAudioTrack.stop();
+                remoteAudioTrack = null;
+            }
+            if (remoteVideoTrack) {
+                remoteVideoTrack.stop();
+                remoteVideoTrack = null;
             }
             if (client) {
                 client.leave();
+                client = null;
+            }
+            // Stop polling
+            if (window.pollTimer) {
+                clearTimeout(window.pollTimer);
             }
         }
 
@@ -564,22 +627,16 @@
 
                 if (data.status === 'accepted') {
                     updateStatus('Call accepted!', 'connected');
+                    window.pollTimer = setTimeout(pollCallStatus, 2000);
                 } else if (data.status === 'ended') {
-                    updateStatus('Call ended', 'error');
-                    document.getElementById('video-screen').innerHTML = `
-                        <h2>Video Call</h2>
-                        <div class="status error">Call ended</div>
-                    `;
-                    setTimeout(() => {
-                        window.close();
-                    }, 2000);
+                    showCallEnded();
                 } else {
                     // Continue polling
-                    setTimeout(pollCallStatus, 2000);
+                    window.pollTimer = setTimeout(pollCallStatus, 2000);
                 }
             } catch (error) {
                 console.error('Error polling call status:', error);
-                setTimeout(pollCallStatus, 2000);
+                window.pollTimer = setTimeout(pollCallStatus, 2000);
             }
         }
 
