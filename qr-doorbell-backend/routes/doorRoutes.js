@@ -189,6 +189,71 @@ router.post('/device/bind', async (req, res) => {
   }
 });
 
+// ✅ Take over session (logs out old device)
+router.post('/device/takeover', async (req, res) => {
+  try {
+    const { userID, deviceID } = req.body;
+    if (!userID || !deviceID) {
+      return res.status(400).json({ error: 'Missing userID or deviceID' });
+    }
+
+    // New device must not already be bound to another user
+    const deviceSessionRef = db.ref(`deviceSessions/${deviceID}`);
+    const deviceSessionSnap = await deviceSessionRef.once('value');
+    if (deviceSessionSnap.exists()) {
+      const existingDeviceSession = deviceSessionSnap.val();
+      if (existingDeviceSession.userID !== userID) {
+        return res.status(409).json({
+          error: 'Device already bound to another user',
+          existingUserID: existingDeviceSession.userID,
+          loginTime: existingDeviceSession.loginTime
+        });
+      }
+    }
+
+    const userSessionRef = db.ref(`userSessions/${userID}`);
+    const userSessionSnap = await userSessionRef.once('value');
+    const oldDeviceID = userSessionSnap.exists()
+      ? (userSessionSnap.val().deviceID || null)
+      : null;
+
+    // Remove old device binding (if different)
+    if (oldDeviceID && oldDeviceID !== deviceID) {
+      await db.ref(`deviceSessions/${oldDeviceID}`).remove();
+    }
+
+    const nowIso = new Date().toISOString();
+    const sessionData = {
+      userID: userID,
+      deviceID: deviceID,
+      loginTime: userSessionSnap.exists()
+        ? (userSessionSnap.val().loginTime || nowIso)
+        : nowIso,
+      lastActivity: nowIso,
+      takeoverAt: nowIso,
+      previousDeviceID: oldDeviceID && oldDeviceID !== deviceID ? oldDeviceID : null
+    };
+
+    await userSessionRef.set(sessionData);
+    await deviceSessionRef.set(sessionData);
+    await db.ref(`users/${userID}/presence`).set({
+      online: true,
+      deviceID: deviceID,
+      lastSeen: nowIso,
+      updatedAt: nowIso
+    });
+
+    res.json({
+      success: true,
+      message: 'Session taken over successfully',
+      oldDeviceID: oldDeviceID
+    });
+  } catch (e) {
+    console.error('Session takeover failed:', e);
+    res.status(500).json({ error: 'Failed to take over session' });
+  }
+});
+
 // ✅ Check device session status
 router.get('/device/status', async (req, res) => {
   try {
