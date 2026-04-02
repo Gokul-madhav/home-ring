@@ -7,6 +7,94 @@ const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
 
 const MAX_FAMILY_MEMBERS = 4;
 
+// ---- RBAC helpers (family-group based) ----
+const PRIORITY_RANK = { low: 0, normal: 1, high: 2 };
+
+function normalizePriority(input) {
+  const p = (input ?? '').toString().trim().toLowerCase();
+  if (p === 'low' || p === 'normal' || p === 'high') return p;
+  return 'normal';
+}
+
+function androidPriorityFromCallPriority(callPriority) {
+  const p = normalizePriority(callPriority);
+  return p === 'high' ? 'high' : 'normal';
+}
+
+async function getUserFamilyGroupId(userId) {
+  if (!userId) return null;
+  const snap = await db.ref(`users/${userId}/familyGroupId`).once('value');
+  if (!snap.exists()) return null;
+  const val = snap.val();
+  return val ? val.toString() : null;
+}
+
+async function getUserRoleInFamilyGroup(familyGroupId, userId) {
+  if (!familyGroupId || !userId) return null;
+  const snap = await db
+    .ref(`familyGroups/${familyGroupId}/members/${userId}/role`)
+    .once('value');
+  if (!snap.exists()) return null;
+  const val = snap.val();
+  return val ? val.toString() : null;
+}
+
+async function isUserMemberOfFamilyGroup(familyGroupId, userId) {
+  const role = await getUserRoleInFamilyGroup(familyGroupId, userId);
+  return role === 'admin' || role === 'member';
+}
+
+async function getFamilyMemberIds(familyGroupId) {
+  if (!familyGroupId) return [];
+  const snap = await db.ref(`familyGroups/${familyGroupId}/members`).once('value');
+  if (!snap.exists()) return [];
+  const members = snap.val();
+  if (!members || typeof members !== 'object') return [];
+  return Object.keys(members);
+}
+
+async function getUserFcmTokens(userId) {
+  if (!userId) return [];
+  const tokensSnap = await db.ref(`users/${userId}/fcmTokens`).once('value');
+  if (!tokensSnap.exists()) return [];
+
+  const raw = tokensSnap.val();
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.filter(Boolean).map((t) => t.toString());
+  return [raw.toString()].filter(Boolean);
+}
+
+async function getUserIsOnline(userId) {
+  if (!userId) return false;
+  const sessionSnap = await db.ref(`userSessions/${userId}`).once('value');
+  return sessionSnap.exists();
+}
+
+async function getOnlineFamilyFcmTokens(familyGroupId) {
+  const memberIds = await getFamilyMemberIds(familyGroupId);
+  const tokens = [];
+
+  for (const memberId of memberIds) {
+    if (!(await getUserIsOnline(memberId))) continue;
+    const memberTokens = await getUserFcmTokens(memberId);
+    for (const t of memberTokens) {
+      if (t && !tokens.includes(t)) tokens.push(t);
+    }
+  }
+
+  return tokens;
+}
+
+async function getCallDataOrThrow(callID) {
+  const callSnap = await db.ref(`calls/${callID}`).once('value');
+  if (!callSnap.exists()) {
+    const err = new Error('Call not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  return callSnap.val();
+}
+
 // Agora configuration
 const AGORA_APP_ID = "e99f68decc74469e93db09796e5ccd8c";
 const AGORA_APP_CERTIFICATE = "42c79730f2a04138a26c5a8339e005d8"; // Add your Agora app certificate
@@ -537,17 +625,35 @@ router.post('/device/unbind', async (req, res) => {
 // ✅ Get incoming calls for owner  
 router.get("/call/incoming", async (req, res) => {
   try {
-    const { ownerID } = req.query;
-    if (!ownerID) return res.status(400).json({ error: "Missing ownerID" });
+    // Backward compatible: frontend currently passes `ownerID`, but we treat it as requesting user.
+    const { userID, ownerID } = req.query;
+    const requestingUserId = (userID || ownerID || "").toString();
+    if (!requestingUserId) return res.status(400).json({ error: "Missing userID/ownerID" });
 
-    const snapshot = await db.ref("calls").orderByChild("ownerID").equalTo(ownerID).once("value");
+    // Only return calls for users that currently have an active session.
+    const isOnline = await getUserIsOnline(requestingUserId);
+    if (!isOnline) return res.json({ calls: [] });
+
+    const familyGroupId = await getUserFamilyGroupId(requestingUserId);
+    const snapshot = familyGroupId
+      ? await db.ref("calls").orderByChild("familyGroupId").equalTo(familyGroupId).once("value")
+      : await db.ref("calls").orderByChild("ownerID").equalTo(requestingUserId).once("value");
+
     const calls = [];
-    snapshot.forEach(child => {
+    snapshot.forEach((child) => {
       const call = child.val();
       if (call.status === "ringing") {
         calls.push({ ...call, callID: child.key });
       }
     });
+
+    // Higher priority first
+    calls.sort((a, b) => {
+      const ra = PRIORITY_RANK[normalizePriority(a.priority)];
+      const rb = PRIORITY_RANK[normalizePriority(b.priority)];
+      return rb - ra;
+    });
+
     res.json({ calls });
   } catch (error) {
     res.status(500).json({ error: "Server error" });
@@ -665,20 +771,21 @@ router.post("/call/:doorID", async (req, res) => {
     }
 
     const ownerID = doorData.claimedBy;
-    const ownerSessionSnap = await db.ref(`userSessions/${ownerID}`).once('value');
-    if (!ownerSessionSnap.exists()) {
-      return res.status(409).json({ error: "Owner is offline" });
-    }
-    const tokensSnap = await db.ref(`users/${ownerID}/fcmTokens`).once('value');
-    if (!tokensSnap.exists()) {
-      return res.status(409).json({ error: "Owner has no registered devices" });
-    }
-    const rawTokens = tokensSnap.val();
-    const tokenList = Array.isArray(rawTokens)
-      ? rawTokens.filter(Boolean)
-      : (rawTokens ? [rawTokens] : []);
-    if (tokenList.length === 0) {
-      return res.status(409).json({ error: "Owner has no registered devices" });
+    const callFamilyGroupId = await getUserFamilyGroupId(ownerID);
+    const callPriority = normalizePriority(req.body.priority);
+
+    // Notify all online family members (not just the door owner).
+    // If no family group exists, fallback to notifying the owner only.
+    const tokenList = callFamilyGroupId
+      ? await getOnlineFamilyFcmTokens(callFamilyGroupId)
+      : (
+        (await getUserIsOnline(ownerID))
+          ? await getUserFcmTokens(ownerID)
+          : []
+      );
+
+    if (!tokenList || tokenList.length === 0) {
+      return res.status(409).json({ error: "No online family devices to notify" });
     }
 
     // Generate unique channel name for this call
@@ -698,7 +805,9 @@ router.post("/call/:doorID", async (req, res) => {
       token: token,
       createdAt: createdAt,
       ownerPhone: doorData.ownerPhone || null,
-      ownerID: ownerID || null
+      ownerID: ownerID || null,
+      familyGroupId: callFamilyGroupId,
+      priority: callPriority
     });
 
     // Create initial call log entry in user's call logs
@@ -727,7 +836,7 @@ router.post("/call/:doorID", async (req, res) => {
           token: token,
           visitorName: visitorName || 'Visitor'
         },
-        android: { priority: 'high' },
+        android: { priority: androidPriorityFromCallPriority(callPriority) },
         apns: { headers: { 'apns-priority': '10' } },
         tokens: tokenList
       };
@@ -771,31 +880,201 @@ router.get("/call/:callID/status", async (req, res) => {
 router.post("/call/:callID/accept", async (req, res) => {
   try {
     const { callID } = req.params;
-    
-    // Get call data to find ownerID
-    const callSnap = await db.ref(`calls/${callID}`).once('value');
-    if (!callSnap.exists()) {
-      return res.status(404).json({ error: "Call not found" });
+
+    const { userID, userId } = req.body;
+    const accepterUserId = (userID || userId || "").toString();
+    if (!accepterUserId) {
+      return res.status(400).json({ error: "Missing userID" });
     }
-    const callData = callSnap.val();
-    const ownerID = callData.ownerID;
-    
+
+    const callData = await getCallDataOrThrow(callID);
+
+    // Enforce that only family members (or the door owner if no family group) can accept.
+    const callFamilyGroupId = callData.familyGroupId || (await getUserFamilyGroupId(callData.ownerID));
+    if (callFamilyGroupId) {
+      const role = await getUserRoleInFamilyGroup(callFamilyGroupId, accepterUserId);
+      if (role !== "admin" && role !== "member") {
+        return res.status(403).json({ error: "Not allowed to accept this call" });
+      }
+    } else {
+      if (String(accepterUserId) !== String(callData.ownerID)) {
+        return res.status(403).json({ error: "Not allowed to accept this call" });
+      }
+    }
+
     const updatedAt = new Date().toISOString();
-    await db.ref(`calls/${callID}/status`).set('accepted');
-    await db.ref(`calls/${callID}/acceptedAt`).set(updatedAt);
-    
-    // Update call log with approved status
-    if (ownerID) {
-      await db.ref(`users/${ownerID}/callLogs/${callID}`).update({
-        status: 'approved',
-        updatedAt: updatedAt,
-        acceptedAt: updatedAt
-      });
-    }
-    
-    res.json({ success: true, message: "Call accepted" });
+
+    // Mark acceptance and set the current handler/ownerID to the accepter.
+    await db.ref(`calls/${callID}`).update({
+      status: "accepted",
+      acceptedAt: updatedAt,
+      ownerID: accepterUserId,
+      acceptedBy: accepterUserId,
+    });
+
+    // Write/overwrite a call log entry under the user who accepted.
+    await db.ref(`users/${accepterUserId}/callLogs/${callID}`).set({
+      callID: callID,
+      visitorName: callData.visitorName || "Visitor",
+      status: "approved",
+      doorID: callData.doorID || null,
+      channelName: callData.channelName || null,
+      createdAt: callData.createdAt || updatedAt,
+      updatedAt: updatedAt,
+      acceptedAt: updatedAt,
+    });
+
+    res.json({ success: true, message: "Call accepted", ownerID: accepterUserId });
   } catch (error) {
     console.error("Call acceptance failed:", error);
+    const statusCode = error?.statusCode;
+    res.status(statusCode || 500).json({ error: "Server error" });
+  }
+});
+
+// ✅ Change call priority (admin only)
+router.post("/call/:callID/priority", async (req, res) => {
+  try {
+    const { callID } = req.params;
+    const { userID, userId, priority } = req.body;
+
+    const actorUserId = (userID || userId || "").toString();
+    if (!actorUserId) return res.status(400).json({ error: "Missing userID" });
+
+    const callData = await getCallDataOrThrow(callID);
+    const callFamilyGroupId = callData.familyGroupId || (await getUserFamilyGroupId(callData.ownerID));
+
+    if (callFamilyGroupId) {
+      const role = await getUserRoleInFamilyGroup(callFamilyGroupId, actorUserId);
+      if (role !== "admin") {
+        return res.status(403).json({ error: "Only admins can change call priority" });
+      }
+    } else {
+      // No family group: only door owner can change priority.
+      if (String(actorUserId) !== String(callData.ownerID)) {
+        return res.status(403).json({ error: "Not allowed to change call priority" });
+      }
+    }
+
+    const newPriority = normalizePriority(priority);
+
+    if (callData.status === "ended") {
+      return res.status(409).json({ error: "Cannot change priority for ended calls" });
+    }
+
+    await db.ref(`calls/${callID}`).update({
+      priority: newPriority,
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Notify online family members again so priority can take effect immediately.
+    const familyGroupTokens = callFamilyGroupId
+      ? await getOnlineFamilyFcmTokens(callFamilyGroupId)
+      : ((await getUserIsOnline(callData.ownerID)) ? await getUserFcmTokens(callData.ownerID) : []);
+
+    if (familyGroupTokens.length === 0) {
+      return res.status(409).json({ error: "No online devices to notify" });
+    }
+
+    const message = {
+      notification: {
+        title: "Incoming Call",
+        body: `Visitor: ${callData.visitorName || ""}`,
+      },
+      data: {
+        type: "incoming_call",
+        callID: callID,
+        channelName: callData.channelName,
+        token: callData.token,
+        visitorName: callData.visitorName || "Visitor",
+        priority: newPriority,
+      },
+      android: { priority: androidPriorityFromCallPriority(newPriority) },
+      apns: { headers: { "apns-priority": "10" } },
+      tokens: familyGroupTokens,
+    };
+
+    await messaging.sendEachForMulticast(message);
+    res.json({ success: true, callID, priority: newPriority });
+  } catch (error) {
+    console.error("Call priority change failed:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// ✅ Forward an incoming call to another family member
+router.post("/call/:callID/forward", async (req, res) => {
+  try {
+    const { callID } = req.params;
+    const { fromUserID, fromUserId, toUserID, toUserId } = req.body;
+
+    const fromUser = (fromUserID || fromUserId || "").toString();
+    const toUser = (toUserID || toUserId || "").toString();
+    if (!fromUser || !toUser) {
+      return res.status(400).json({ error: "Missing fromUserID/toUserID" });
+    }
+
+    const callData = await getCallDataOrThrow(callID);
+    const callFamilyGroupId = callData.familyGroupId || (await getUserFamilyGroupId(callData.ownerID));
+
+    if (!callFamilyGroupId) {
+      return res.status(403).json({ error: "Forwarding requires a family group" });
+    }
+
+    const fromRole = await getUserRoleInFamilyGroup(callFamilyGroupId, fromUser);
+    const toRole = await getUserRoleInFamilyGroup(callFamilyGroupId, toUser);
+    if ((fromRole !== "admin" && fromRole !== "member") || (toRole !== "admin" && toRole !== "member")) {
+      return res.status(403).json({ error: "Not allowed to forward to this user" });
+    }
+
+    if (callData.status !== "ringing") {
+      return res.status(409).json({ error: "Call is not in a forwardable state" });
+    }
+
+    // Ensure the target is online and has devices.
+    if (!(await getUserIsOnline(toUser))) {
+      return res.status(409).json({ error: "Target user is offline" });
+    }
+    const toTokens = await getUserFcmTokens(toUser);
+    if (!toTokens || toTokens.length === 0) {
+      return res.status(409).json({ error: "Target user has no registered devices" });
+    }
+
+    const nowIso = new Date().toISOString();
+
+    // Move the handler/ownerID to the forwarded user.
+    await db.ref(`calls/${callID}`).update({
+      ownerID: toUser,
+      forwardedAt: nowIso,
+      previousOwnerID: callData.ownerID || null,
+      updatedAt: nowIso,
+      status: "ringing",
+    });
+
+    const callPriority = normalizePriority(callData.priority);
+    const message = {
+      notification: {
+        title: "Incoming Call",
+        body: `Visitor: ${callData.visitorName || ""}`,
+      },
+      data: {
+        type: "incoming_call",
+        callID: callID,
+        channelName: callData.channelName,
+        token: callData.token,
+        visitorName: callData.visitorName || "Visitor",
+        forwardedBy: fromUser,
+        priority: callPriority,
+      },
+      android: { priority: androidPriorityFromCallPriority(callPriority) },
+      apns: { headers: { "apns-priority": "10" } },
+      tokens: toTokens,
+    };
+
+    await messaging.sendEachForMulticast(message);
+    res.json({ success: true, callID, forwardedTo: toUser });
+  } catch (error) {
+    console.error("Call forwarding failed:", error);
     res.status(500).json({ error: "Server error" });
   }
 });
@@ -804,39 +1083,59 @@ router.post("/call/:callID/accept", async (req, res) => {
 router.post("/call/:callID/end", async (req, res) => {
   try {
     const { callID } = req.params;
-    
-    // Get call data to find ownerID and determine status
-    const callSnap = await db.ref(`calls/${callID}`).once('value');
-    if (!callSnap.exists()) {
-      return res.status(404).json({ error: "Call not found" });
+
+    const { userID, userId } = req.body;
+    const actorUserId = (userID || userId || "").toString();
+    if (!actorUserId) {
+      return res.status(400).json({ error: "Missing userID" });
     }
-    const callData = callSnap.val();
-    const ownerID = callData.ownerID;
-    const currentStatus = callData.status;
-    
-    const endedAt = new Date().toISOString();
-    await db.ref(`calls/${callID}/status`).set('ended');
-    await db.ref(`calls/${callID}/endedAt`).set(endedAt);
-    
-    // Update call log - if call was ringing and now ended, mark as declined
-    // If call was accepted and now ended, keep it as approved but mark ended
-    if (ownerID) {
-      let logStatus = 'declined'; // Default for declined calls
-      if (currentStatus === 'accepted') {
-        logStatus = 'approved'; // Keep as approved if it was already accepted
+
+    const callData = await getCallDataOrThrow(callID);
+
+    const callFamilyGroupId = callData.familyGroupId || (await getUserFamilyGroupId(callData.ownerID));
+    if (callFamilyGroupId) {
+      const role = await getUserRoleInFamilyGroup(callFamilyGroupId, actorUserId);
+      if (role !== "admin" && role !== "member") {
+        return res.status(403).json({ error: "Not allowed to end this call" });
       }
-      
-      await db.ref(`users/${ownerID}/callLogs/${callID}`).update({
-        status: logStatus,
-        updatedAt: endedAt,
-        endedAt: endedAt
-      });
+    } else {
+      if (String(actorUserId) !== String(callData.ownerID)) {
+        return res.status(403).json({ error: "Not allowed to end this call" });
+      }
     }
-    
+
+    const currentStatus = callData.status;
+    const endedAt = new Date().toISOString();
+
+    await db.ref(`calls/${callID}`).update({
+      status: "ended",
+      endedAt: endedAt,
+      endedBy: actorUserId,
+    });
+
+    let logStatus = "declined";
+    if (currentStatus === "accepted") {
+      logStatus = "approved";
+    }
+
+    // Ensure call log exists and is updated for the actor.
+    await db.ref(`users/${actorUserId}/callLogs/${callID}`).set({
+      callID: callID,
+      visitorName: callData.visitorName || "Visitor",
+      status: logStatus,
+      doorID: callData.doorID || null,
+      channelName: callData.channelName || null,
+      createdAt: callData.createdAt || endedAt,
+      updatedAt: endedAt,
+      acceptedAt: callData.acceptedAt || null,
+      endedAt: endedAt,
+    });
+
     res.json({ success: true, message: "Call ended" });
   } catch (error) {
     console.error("Call ending failed:", error);
-    res.status(500).json({ error: "Server error" });
+    const statusCode = error?.statusCode;
+    res.status(statusCode || 500).json({ error: "Server error" });
   }
 });
 
