@@ -387,6 +387,7 @@
         let channelName = null;
         let isVideoEnabled = true;
         let isAudioEnabled = true;
+        let callDurationTimeoutId = null; // auto-cut timer (3 minutes)
 
         // DOM elements
         const welcomeScreen = document.getElementById('welcome-screen');
@@ -560,11 +561,15 @@
             }
         }
 
-        function showCallEnded() {
+        function showCallEnded(message) {
             // Hide video call content
             const videoCallContent = document.getElementById('video-call-content');
             const callEndedContent = document.getElementById('call-ended-content');
             const status = document.getElementById('status');
+            const msgEl = document.querySelector('.call-ended-message');
+            if (msgEl) {
+                msgEl.textContent = message || 'The call has ended. Thank you!';
+            }
             
             if (videoCallContent) {
                 videoCallContent.classList.add('hidden');
@@ -607,6 +612,11 @@
             if (window.pollTimer) {
                 clearTimeout(window.pollTimer);
             }
+            // Clear auto-cut timer
+            if (callDurationTimeoutId) {
+                clearTimeout(callDurationTimeoutId);
+                callDurationTimeoutId = null;
+            }
         }
 
         function updateStatus(message, type) {
@@ -625,14 +635,31 @@
                 const response = await fetch(`https://homering.onrender.com/api/door/call/${callID}/status`);
                 const data = await response.json();
 
+                const visitMsg = (data.visitorStatusMessage && String(data.visitorStatusMessage).trim()) || '';
+                const pollMs = data.sequentialRouting ? 1500 : 2000;
+
                 if (data.status === 'accepted') {
-                    updateStatus('Call accepted!', 'connected');
-                    window.pollTimer = setTimeout(pollCallStatus, 2000);
+                    const display = visitMsg === 'Connected'
+                        ? 'Connected'
+                        : (visitMsg || 'Call accepted!');
+                    updateStatus(display, 'connected');
+                    // Start 3-minute auto-cut from the moment call is accepted
+                    if (!callDurationTimeoutId) {
+                        callDurationTimeoutId = setTimeout(() => {
+                            endCall();
+                        }, 3 * 60 * 1000);
+                    }
+                    window.pollTimer = setTimeout(pollCallStatus, pollMs);
                 } else if (data.status === 'ended') {
-                    showCallEnded();
+                    const endedMsg = visitMsg || 'The call has ended. Thank you!';
+                    cleanup();
+                    showCallEnded(endedMsg);
                 } else {
-                    // Continue polling
-                    window.pollTimer = setTimeout(pollCallStatus, 2000);
+                    if (visitMsg) {
+                        updateStatus(visitMsg, 'ringing');
+                        statusLoading.classList.remove('hidden');
+                    }
+                    window.pollTimer = setTimeout(pollCallStatus, pollMs);
                 }
             } catch (error) {
                 console.error('Error polling call status:', error);
@@ -640,13 +667,17 @@
             }
         }
 
-        // Handle page unload
+        // Handle page unload — POST with keepalive so the backend ends the call reliably
         window.addEventListener('beforeunload', function() {
             if (callID) {
-                // Use sendBeacon for reliable backend notification
-                navigator.sendBeacon(
-                    `https://homering.onrender.com/api/door/call/${callID}/end`
-                );
+                try {
+                    fetch(`https://homering.onrender.com/api/door/call/${callID}/end`, {
+                        method: 'POST',
+                        keepalive: true,
+                        headers: { 'Content-Type': 'application/json' },
+                        body: '{}'
+                    });
+                } catch (_) {}
             }
             cleanup();
         });
