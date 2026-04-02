@@ -281,7 +281,7 @@ router.get('/family/my', async (req, res) => {
 // ✅ Family Group: Create (creator becomes Primary Owner/Admin)
 router.post('/family/create', async (req, res) => {
   try {
-    const { adminUserId } = req.body;
+    const { adminUserId, name, deviceId } = req.body;
     if (!adminUserId) return res.status(400).json({ error: 'Missing adminUserId' });
 
     const existing = await db.ref(`users/${adminUserId}/familyGroupId`).once('value');
@@ -295,7 +295,13 @@ router.post('/family/create', async (req, res) => {
       familyGroupId,
       adminUserId,
       members: {
-        [adminUserId]: { userId: adminUserId, role: 'admin', joinedAt: nowIso }
+        [adminUserId]: {
+          userId: adminUserId,
+          name: name ? String(name).trim() : null,
+          deviceId: deviceId ? String(deviceId).trim() : null,
+          role: 'admin',
+          joinedAt: nowIso
+        }
       },
       invites: {},
       createdAt: nowIso,
@@ -354,7 +360,7 @@ router.post('/family/invite/email', async (req, res) => {
 // ✅ Family Group: Join via invite link/code (familyGroupId)
 router.post('/family/join', async (req, res) => {
   try {
-    const { familyGroupId, userId } = req.body;
+    const { familyGroupId, userId, name, deviceId } = req.body;
     if (!familyGroupId || !userId) {
       return res.status(400).json({ error: 'Missing familyGroupId or userId' });
     }
@@ -381,6 +387,8 @@ router.post('/family/join', async (req, res) => {
     const nowIso = new Date().toISOString();
     await db.ref(`familyGroups/${familyGroupId}/members/${userId}`).set({
       userId,
+      name: name ? String(name).trim() : null,
+      deviceId: deviceId ? String(deviceId).trim() : null,
       role: 'member',
       joinedAt: nowIso
     });
@@ -391,6 +399,42 @@ router.post('/family/join', async (req, res) => {
     res.json({ success: true, familyGroup: updatedSnap.val() });
   } catch (e) {
     console.error('Failed to join family group:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ✅ Family Group: Remove member (admin only)
+router.post('/family/remove', async (req, res) => {
+  try {
+    const { familyGroupId, adminUserId, targetUserId } = req.body;
+    if (!familyGroupId || !adminUserId || !targetUserId) {
+      return res.status(400).json({ error: 'Missing familyGroupId, adminUserId, or targetUserId' });
+    }
+
+    const groupRef = db.ref(`familyGroups/${familyGroupId}`);
+    const groupSnap = await groupRef.once('value');
+    if (!groupSnap.exists()) return res.status(404).json({ error: 'Family group not found' });
+    const group = groupSnap.val();
+
+    if (group.adminUserId !== adminUserId) {
+      return res.status(403).json({ error: 'Only admin can remove members' });
+    }
+    if (String(targetUserId) === String(group.adminUserId)) {
+      return res.status(409).json({ error: 'Cannot remove admin' });
+    }
+
+    const memberSnap = await db.ref(`familyGroups/${familyGroupId}/members/${targetUserId}`).once('value');
+    if (!memberSnap.exists()) {
+      return res.status(404).json({ error: 'Member not found' });
+    }
+
+    await db.ref(`familyGroups/${familyGroupId}/members/${targetUserId}`).remove();
+    await db.ref(`users/${targetUserId}/familyGroupId`).remove();
+    await groupRef.child('updatedAt').set(new Date().toISOString());
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Failed to remove member:', e);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -459,18 +503,28 @@ router.post('/device/unbind', async (req, res) => {
     const { userID, deviceID } = req.body;
     if (!userID || !deviceID) return res.status(400).json({ error: 'Missing userID or deviceID' });
 
-    // Remove user session
-    await db.ref(`userSessions/${userID}`).remove();
-    
-    // Remove device session
+    const nowIso = new Date().toISOString();
+
+    // Always remove this device's session entry
     await db.ref(`deviceSessions/${deviceID}`).remove();
-    
-    await db.ref(`users/${userID}/presence`).set({
-      online: false,
-      deviceID: null,
-      lastSeen: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    });
+
+    // Only remove the user's active session if it matches this device.
+    const userSessionRef = db.ref(`userSessions/${userID}`);
+    const userSessionSnap = await userSessionRef.once('value');
+    const currentDevice = userSessionSnap.exists() ? userSessionSnap.val().deviceID : null;
+
+    if (currentDevice === deviceID) {
+      await userSessionRef.remove();
+      await db.ref(`users/${userID}/presence`).set({
+        online: false,
+        deviceID: null,
+        lastSeen: nowIso,
+        updatedAt: nowIso
+      });
+    } else {
+      // Don't flip presence offline if user is active on another device.
+      await db.ref(`users/${userID}/presence/updatedAt`).set(nowIso);
+    }
 
     res.json({ success: true, message: 'Device unbound successfully' });
   } catch (e) {
