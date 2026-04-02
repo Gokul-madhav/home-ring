@@ -5,6 +5,8 @@ const { v4: uuidv4 } = require("uuid");
 const generateQR = require("../utils/qrGenerator");
 const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
 
+const MAX_FAMILY_MEMBERS = 4;
+
 // Agora configuration
 const AGORA_APP_ID = "e99f68decc74469e93db09796e5ccd8c";
 const AGORA_APP_CERTIFICATE = "42c79730f2a04138a26c5a8339e005d8"; // Add your Agora app certificate
@@ -251,6 +253,170 @@ router.post('/device/takeover', async (req, res) => {
   } catch (e) {
     console.error('Session takeover failed:', e);
     res.status(500).json({ error: 'Failed to take over session' });
+  }
+});
+
+// ✅ Family Group: Get my family group (by user)
+router.get('/family/my', async (req, res) => {
+  try {
+    const { userID } = req.query;
+    if (!userID) return res.status(400).json({ error: 'Missing userID' });
+
+    const groupIdSnap = await db.ref(`users/${userID}/familyGroupId`).once('value');
+    if (!groupIdSnap.exists() || !groupIdSnap.val()) {
+      return res.json({ hasGroup: false, familyGroup: null });
+    }
+    const familyGroupId = groupIdSnap.val();
+    const groupSnap = await db.ref(`familyGroups/${familyGroupId}`).once('value');
+    if (!groupSnap.exists()) {
+      return res.json({ hasGroup: false, familyGroup: null });
+    }
+    return res.json({ hasGroup: true, familyGroup: groupSnap.val() });
+  } catch (e) {
+    console.error('Failed to get my family group:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ✅ Family Group: Create (creator becomes Primary Owner/Admin)
+router.post('/family/create', async (req, res) => {
+  try {
+    const { adminUserId } = req.body;
+    if (!adminUserId) return res.status(400).json({ error: 'Missing adminUserId' });
+
+    const existing = await db.ref(`users/${adminUserId}/familyGroupId`).once('value');
+    if (existing.exists() && existing.val()) {
+      return res.status(409).json({ error: 'User already belongs to a family group', familyGroupId: existing.val() });
+    }
+
+    const familyGroupId = uuidv4();
+    const nowIso = new Date().toISOString();
+    const groupData = {
+      familyGroupId,
+      adminUserId,
+      members: {
+        [adminUserId]: { userId: adminUserId, role: 'admin', joinedAt: nowIso }
+      },
+      invites: {},
+      createdAt: nowIso,
+      updatedAt: nowIso
+    };
+
+    await db.ref(`familyGroups/${familyGroupId}`).set(groupData);
+    await db.ref(`users/${adminUserId}/familyGroupId`).set(familyGroupId);
+
+    res.json({ success: true, familyGroupId, familyGroup: groupData });
+  } catch (e) {
+    console.error('Failed to create family group:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ✅ Family Group: Invite by email (creates a pending invite record)
+router.post('/family/invite/email', async (req, res) => {
+  try {
+    const { familyGroupId, adminUserId, email } = req.body;
+    if (!familyGroupId || !adminUserId || !email) {
+      return res.status(400).json({ error: 'Missing familyGroupId, adminUserId, or email' });
+    }
+
+    const groupRef = db.ref(`familyGroups/${familyGroupId}`);
+    const groupSnap = await groupRef.once('value');
+    if (!groupSnap.exists()) return res.status(404).json({ error: 'Family group not found' });
+    const group = groupSnap.val();
+    if (group.adminUserId !== adminUserId) return res.status(403).json({ error: 'Only admin can invite' });
+
+    const members = group.members || {};
+    const memberCount = Object.keys(members).length;
+    if (memberCount >= MAX_FAMILY_MEMBERS) {
+      return res.status(409).json({ error: `Family group is full (max ${MAX_FAMILY_MEMBERS})` });
+    }
+
+    const inviteId = uuidv4();
+    const nowIso = new Date().toISOString();
+    const invite = {
+      inviteId,
+      email: String(email).trim().toLowerCase(),
+      status: 'pending',
+      createdAt: nowIso
+    };
+    await db.ref(`familyGroups/${familyGroupId}/invites/${inviteId}`).set(invite);
+    await groupRef.child('updatedAt').set(nowIso);
+
+    // NOTE: email sending is not implemented here; client can share link/code.
+    res.json({ success: true, invite });
+  } catch (e) {
+    console.error('Failed to create email invite:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ✅ Family Group: Join via invite link/code (familyGroupId)
+router.post('/family/join', async (req, res) => {
+  try {
+    const { familyGroupId, userId } = req.body;
+    if (!familyGroupId || !userId) {
+      return res.status(400).json({ error: 'Missing familyGroupId or userId' });
+    }
+
+    const userGroupSnap = await db.ref(`users/${userId}/familyGroupId`).once('value');
+    if (userGroupSnap.exists() && userGroupSnap.val()) {
+      return res.status(409).json({ error: 'User already belongs to a family group', familyGroupId: userGroupSnap.val() });
+    }
+
+    const groupRef = db.ref(`familyGroups/${familyGroupId}`);
+    const groupSnap = await groupRef.once('value');
+    if (!groupSnap.exists()) return res.status(404).json({ error: 'Family group not found' });
+    const group = groupSnap.val();
+
+    const members = group.members || {};
+    const memberCount = Object.keys(members).length;
+    if (memberCount >= MAX_FAMILY_MEMBERS) {
+      return res.status(409).json({ error: `Family group is full (max ${MAX_FAMILY_MEMBERS})` });
+    }
+    if (members[userId]) {
+      return res.json({ success: true, message: 'Already a member', familyGroup: group });
+    }
+
+    const nowIso = new Date().toISOString();
+    await db.ref(`familyGroups/${familyGroupId}/members/${userId}`).set({
+      userId,
+      role: 'member',
+      joinedAt: nowIso
+    });
+    await db.ref(`users/${userId}/familyGroupId`).set(familyGroupId);
+    await groupRef.child('updatedAt').set(nowIso);
+
+    const updatedSnap = await groupRef.once('value');
+    res.json({ success: true, familyGroup: updatedSnap.val() });
+  } catch (e) {
+    console.error('Failed to join family group:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ✅ Family Group: Leave (non-admin only)
+router.post('/family/leave', async (req, res) => {
+  try {
+    const { familyGroupId, userId } = req.body;
+    if (!familyGroupId || !userId) return res.status(400).json({ error: 'Missing familyGroupId or userId' });
+
+    const groupRef = db.ref(`familyGroups/${familyGroupId}`);
+    const groupSnap = await groupRef.once('value');
+    if (!groupSnap.exists()) return res.status(404).json({ error: 'Family group not found' });
+    const group = groupSnap.val();
+    if (group.adminUserId === userId) {
+      return res.status(409).json({ error: 'Admin cannot leave the family group' });
+    }
+
+    await db.ref(`familyGroups/${familyGroupId}/members/${userId}`).remove();
+    await db.ref(`users/${userId}/familyGroupId`).remove();
+    await groupRef.child('updatedAt').set(new Date().toISOString());
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Failed to leave family group:', e);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
