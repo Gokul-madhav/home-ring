@@ -172,7 +172,46 @@ async function sendIncomingFcmToUsers(userIds, payload, androidPri) {
   }
 }
 
+/** Data-only FCM: dismiss CallKit / incoming UI when sequential ring moves on or ends. */
+async function sendRingCancelledFcmToUsers(userIds, { callID, reason }) {
+  const tokens = [];
+  for (const uid of userIds) {
+    const ts = await getUserFcmTokens(uid);
+    for (const t of ts) {
+      if (t && !tokens.includes(t)) tokens.push(t);
+    }
+  }
+  if (!tokens.length) return;
+  const cid = String(callID);
+  const r = String(reason || 'routing_advanced');
+  const message = {
+    data: {
+      type: 'ring_cancelled',
+      event: 'ring_cancelled',
+      callID: cid,
+      reason: r,
+    },
+    android: { priority: 'high' },
+    apns: {
+      headers: { 'apns-priority': '5' },
+      payload: { aps: { 'content-available': 1 } },
+    },
+    tokens,
+  };
+  try {
+    await messaging.sendEachForMulticast(message);
+  } catch (err) {
+    console.error('FCM ring_cancelled send failed', err);
+  }
+}
+
 async function finalizeCallNoAnswer(callID) {
+  const snap = await db.ref(`calls/${callID}`).once('value');
+  const callVal = snap.exists() ? snap.val() : {};
+  const prevTarget = callVal.currentTargetUserId
+    ? String(callVal.currentTargetUserId)
+    : null;
+
   const endedAt = new Date().toISOString();
   await db.ref(`calls/${callID}`).update({
     status: 'ended',
@@ -182,6 +221,10 @@ async function finalizeCallNoAnswer(callID) {
     endedBy: 'system',
     updatedAt: endedAt,
   });
+
+  if (prevTarget) {
+    await sendRingCancelledFcmToUsers([prevTarget], { callID, reason: 'no_answer' });
+  }
 }
 
 async function advanceSequentialRing(callID, force = false) {
@@ -196,6 +239,7 @@ async function advanceSequentialRing(callID, force = false) {
 
   const queue = Array.isArray(c.routingQueue) ? c.routingQueue.map(String) : [];
   const prevIdx = Number(c.routingIndex);
+  const prevTargetUserId = c.currentTargetUserId ? String(c.currentTargetUserId) : null;
   const nextIdx = await findNextRoutableIndex(queue, prevIdx + 1);
 
   if (nextIdx < 0) {
@@ -229,6 +273,10 @@ async function advanceSequentialRing(callID, force = false) {
     currentOwnerLabel: label,
     routingIndex: String(nextIdx),
   }, androidPriorityFromCallPriority(pri));
+
+  if (prevTargetUserId && prevTargetUserId !== String(nextUid)) {
+    await sendRingCancelledFcmToUsers([prevTargetUserId], { callID, reason: 'routing_advanced' });
+  }
 }
 
 async function clearBusyForUser(userId) {
@@ -1448,6 +1496,16 @@ router.post("/call/:callID/end", async (req, res) => {
           callData.status === "ringing" ? "Visitor cancelled" : "Call ended",
         ringDeadlineAt: null,
       });
+      if (
+        callData.sequentialRouting &&
+        callData.status === "ringing" &&
+        callData.currentTargetUserId
+      ) {
+        await sendRingCancelledFcmToUsers([String(callData.currentTargetUserId)], {
+          callID,
+          reason: "visitor_hangup",
+        });
+      }
       if (callData.acceptedBy) await clearBusyForUser(callData.acceptedBy);
       return res.json({ success: true, message: "Call ended" });
     }
