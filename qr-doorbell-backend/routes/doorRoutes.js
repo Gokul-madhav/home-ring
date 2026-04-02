@@ -308,6 +308,39 @@ router.post("/deactivate", async (req, res) => {
   }
 });
 
+// ✅ Rename doorbell (owner action)
+router.post("/rename", async (req, res) => {
+  try {
+    const { doorID, ownerID, name } = req.body;
+    if (!doorID || !ownerID) {
+      return res.status(400).json({ error: "Missing doorID or ownerID" });
+    }
+
+    const trimmedName = (name ?? "").toString().trim();
+    if (trimmedName.length === 0) {
+      return res.status(400).json({ error: "Name cannot be empty" });
+    }
+    if (trimmedName.length > 40) {
+      return res.status(400).json({ error: "Name too long (max 40)" });
+    }
+
+    // Store per-user so different owners (future) can name independently.
+    await db.ref(`users/${ownerID}/doorbells/${doorID}/name`).set(trimmedName);
+
+    // Also store on the door itself for convenience (visitor/admin views).
+    await db.ref(`doors/${doorID}/name`).set(trimmedName);
+    await db.ref(`doors/${doorID}/lastActivity`).set(new Date().toISOString());
+    await db
+      .ref(`users/${ownerID}/doorbells/${doorID}/lastActivity`)
+      .set(new Date().toISOString());
+
+    res.json({ success: true, message: "Doorbell renamed", name: trimmedName });
+  } catch (error) {
+    console.error("Rename failed:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // ✅ Delete doorbell
 router.delete("/:doorID", async (req, res) => {
   try {
@@ -632,26 +665,26 @@ function generateAgoraToken(channelName) {
   return RtcTokenBuilder.buildTokenWithUid(appID, appCertificate, channelName, uid, role, privilegeExpireTime);
 }
 
-// Scheduled cleanup for orphaned calls
+// Scheduled cleanup to auto-end long-running calls (max 3 minutes)
 setInterval(async () => {
   try {
     const now = Date.now();
-    const tenMinutes = 5 * 60 * 1000;
+    const maxDurationMs = 3 * 60 * 1000; // 3 minutes
     const snapshot = await db.ref('calls').once('value');
     snapshot.forEach(child => {
       const call = child.val();
       if ((call.status === 'ringing' || call.status === 'accepted') && call.createdAt) {
         const createdAt = new Date(call.createdAt).getTime();
-        if (now - createdAt > tenMinutes) {
+        if (now - createdAt > maxDurationMs) {
           db.ref(`calls/${child.key}/status`).set('ended');
           db.ref(`calls/${child.key}/endedAt`).set(new Date().toISOString());
-          console.log(`Cleaned up orphaned call: ${child.key}`);
+          console.log(`Auto-ended call after 3 minutes: ${child.key}`);
         }
       }
     });
   } catch (err) {
     console.error('Error during call cleanup:', err);
   }
-}, 5 * 60 * 1000); // Run every 5 minutes
+}, 30 * 1000); // Check roughly every 30 seconds
 
 module.exports = router;
