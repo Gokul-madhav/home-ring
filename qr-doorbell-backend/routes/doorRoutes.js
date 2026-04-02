@@ -95,6 +95,151 @@ async function getCallDataOrThrow(callID) {
   return callSnap.val();
 }
 
+/** Sequential family routing: ring each owner slot ~12s before advancing */
+const RING_TIMEOUT_MS = 12000;
+
+async function getUserAvailabilityStatus(userId) {
+  if (!userId) return 'offline';
+  const sessionOk = await getUserIsOnline(userId);
+  const presSnap = await db.ref(`users/${userId}/presence`).once('value');
+  if (!presSnap.exists()) {
+    return sessionOk ? 'online' : 'offline';
+  }
+  const p = presSnap.val();
+  const st = (p.availabilityStatus || '').toString().toLowerCase();
+  if (st === 'busy') return 'busy';
+  if (st === 'offline') return 'offline';
+  if (p.online === false) return 'offline';
+  return sessionOk ? 'online' : 'offline';
+}
+
+async function isUserRoutable(userId) {
+  const st = await getUserAvailabilityStatus(userId);
+  return st === 'online';
+}
+
+async function getRoutingMemberQueue(familyGroupId) {
+  if (!familyGroupId) return [];
+  const groupSnap = await db.ref(`familyGroups/${familyGroupId}`).once('value');
+  if (!groupSnap.exists()) return [];
+  const group = groupSnap.val();
+  const members = group.members || {};
+  const memberKeys = new Set(Object.keys(members));
+  let order = [];
+  if (Array.isArray(group.callRoutingOrder)) {
+    order = group.callRoutingOrder.map((x) => x.toString()).filter((id) => memberKeys.has(id));
+  }
+  for (const id of memberKeys) {
+    if (!order.includes(id)) order.push(id);
+  }
+  return order;
+}
+
+async function findNextRoutableIndex(queue, fromIndex) {
+  for (let i = Math.max(0, fromIndex); i < queue.length; i++) {
+    if (await isUserRoutable(queue[i])) return i;
+  }
+  return -1;
+}
+
+function ownerLabelFromIndex(i) {
+  return `Owner ${i + 1}`;
+}
+
+async function sendIncomingFcmToUsers(userIds, payload, androidPri) {
+  const tokens = [];
+  for (const uid of userIds) {
+    const ts = await getUserFcmTokens(uid);
+    for (const t of ts) {
+      if (t && !tokens.includes(t)) tokens.push(t);
+    }
+  }
+  if (!tokens.length) return;
+  const message = {
+    notification: {
+      title: 'Incoming Call',
+      body: `Visitor: ${payload.visitorName || ''}`,
+    },
+    data: payload,
+    android: { priority: androidPri },
+    apns: { headers: { 'apns-priority': '10' } },
+    tokens,
+  };
+  try {
+    await messaging.sendEachForMulticast(message);
+  } catch (err) {
+    console.error('FCM send failed', err);
+  }
+}
+
+async function finalizeCallNoAnswer(callID) {
+  const endedAt = new Date().toISOString();
+  await db.ref(`calls/${callID}`).update({
+    status: 'ended',
+    endedAt,
+    routingPhase: 'no_answer',
+    visitorStatusMessage: 'All members are unavailable',
+    endedBy: 'system',
+    updatedAt: endedAt,
+  });
+}
+
+async function advanceSequentialRing(callID, force = false) {
+  const ref = db.ref(`calls/${callID}`);
+  const snap = await ref.once('value');
+  if (!snap.exists()) return;
+  const c = snap.val();
+  if (c.status !== 'ringing' || !c.sequentialRouting) return;
+
+  const deadline = c.ringDeadlineAt ? new Date(c.ringDeadlineAt).getTime() : 0;
+  if (!force && Date.now() < deadline) return;
+
+  const queue = Array.isArray(c.routingQueue) ? c.routingQueue.map(String) : [];
+  const prevIdx = Number(c.routingIndex);
+  const nextIdx = await findNextRoutableIndex(queue, prevIdx + 1);
+
+  if (nextIdx < 0) {
+    await finalizeCallNoAnswer(callID);
+    return;
+  }
+
+  const nextUid = queue[nextIdx];
+  const label = ownerLabelFromIndex(nextIdx);
+  const ringDeadlineAt = new Date(Date.now() + RING_TIMEOUT_MS).toISOString();
+  const pri = normalizePriority(c.priority);
+
+  await ref.update({
+    routingIndex: nextIdx,
+    currentTargetUserId: nextUid,
+    ownerID: nextUid,
+    currentOwnerLabel: label,
+    ringDeadlineAt,
+    visitorStatusMessage: `Calling ${label}...`,
+    updatedAt: new Date().toISOString(),
+  });
+
+  await sendIncomingFcmToUsers([nextUid], {
+    type: 'incoming_call',
+    callID,
+    channelName: c.channelName,
+    token: c.token,
+    visitorName: c.visitorName || 'Visitor',
+    priority: pri,
+    sequentialRouting: '1',
+    currentOwnerLabel: label,
+    routingIndex: String(nextIdx),
+  }, androidPriorityFromCallPriority(pri));
+}
+
+async function clearBusyForUser(userId) {
+  if (!userId) return;
+  await db.ref(`users/${userId}/presence`).update({
+    availabilityStatus: 'online',
+    updatedAt: new Date().toISOString(),
+  });
+  await db.ref(`users/${userId}/presence/busyCallId`).remove();
+}
+
 // Agora configuration
 const AGORA_APP_ID = "e99f68decc74469e93db09796e5ccd8c";
 const AGORA_APP_CERTIFICATE = "42c79730f2a04138a26c5a8339e005d8"; // Add your Agora app certificate
@@ -267,6 +412,7 @@ router.post('/device/bind', async (req, res) => {
     await deviceSessionRef.set(sessionData);
     await db.ref(`users/${userID}/presence`).set({
       online: true,
+      availabilityStatus: 'online',
       deviceID: deviceID,
       lastSeen: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -328,6 +474,7 @@ router.post('/device/takeover', async (req, res) => {
     await deviceSessionRef.set(sessionData);
     await db.ref(`users/${userID}/presence`).set({
       online: true,
+      availabilityStatus: 'online',
       deviceID: deviceID,
       lastSeen: nowIso,
       updatedAt: nowIso
@@ -382,6 +529,7 @@ router.post('/family/create', async (req, res) => {
     const groupData = {
       familyGroupId,
       adminUserId,
+      callRoutingOrder: [adminUserId],
       members: {
         [adminUserId]: {
           userId: adminUserId,
@@ -483,10 +631,58 @@ router.post('/family/join', async (req, res) => {
     await db.ref(`users/${userId}/familyGroupId`).set(familyGroupId);
     await groupRef.child('updatedAt').set(nowIso);
 
+    const prevOrderSnap = await groupRef.child('callRoutingOrder').once('value');
+    let order = prevOrderSnap.exists() && Array.isArray(prevOrderSnap.val())
+      ? [...prevOrderSnap.val()].map(String)
+      : Object.keys(members);
+    if (!order.includes(String(userId))) order.push(String(userId));
+    await groupRef.child('callRoutingOrder').set(order);
+
     const updatedSnap = await groupRef.once('value');
     res.json({ success: true, familyGroup: updatedSnap.val() });
   } catch (e) {
     console.error('Failed to join family group:', e);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ✅ Family Group: Admin sets call routing order (Owner 1 → Owner 4)
+router.post('/family/routing/order', async (req, res) => {
+  try {
+    const { familyGroupId, adminUserId, orderedUserIds } = req.body;
+    if (!familyGroupId || !adminUserId || !Array.isArray(orderedUserIds)) {
+      return res.status(400).json({ error: 'Missing familyGroupId, adminUserId, or orderedUserIds' });
+    }
+
+    const groupRef = db.ref(`familyGroups/${familyGroupId}`);
+    const groupSnap = await groupRef.once('value');
+    if (!groupSnap.exists()) return res.status(404).json({ error: 'Family group not found' });
+    const group = groupSnap.val();
+    if (group.adminUserId !== adminUserId) {
+      return res.status(403).json({ error: 'Only admin can change routing order' });
+    }
+
+    const members = group.members || {};
+    const memberKeys = new Set(Object.keys(members));
+    const next = orderedUserIds.map((x) => String(x).trim()).filter((id) => memberKeys.has(id));
+    const seen = new Set();
+    const unique = [];
+    for (const id of next) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        unique.push(id);
+      }
+    }
+    if (unique.length > MAX_FAMILY_MEMBERS) {
+      return res.status(400).json({ error: `Too many slots (max ${MAX_FAMILY_MEMBERS})` });
+    }
+
+    await groupRef.child('callRoutingOrder').set(unique);
+    await groupRef.child('updatedAt').set(new Date().toISOString());
+    const updatedSnap = await groupRef.once('value');
+    res.json({ success: true, familyGroup: updatedSnap.val() });
+  } catch (e) {
+    console.error('Failed to save routing order:', e);
     res.status(500).json({ error: 'Server error' });
   }
 });
@@ -518,6 +714,13 @@ router.post('/family/remove', async (req, res) => {
 
     await db.ref(`familyGroups/${familyGroupId}/members/${targetUserId}`).remove();
     await db.ref(`users/${targetUserId}/familyGroupId`).remove();
+
+    const ordSnap = await groupRef.child('callRoutingOrder').once('value');
+    if (ordSnap.exists() && Array.isArray(ordSnap.val())) {
+      const filtered = ordSnap.val().map(String).filter((id) => id !== String(targetUserId));
+      await groupRef.child('callRoutingOrder').set(filtered);
+    }
+
     await groupRef.child('updatedAt').set(new Date().toISOString());
 
     res.json({ success: true });
@@ -543,6 +746,13 @@ router.post('/family/leave', async (req, res) => {
 
     await db.ref(`familyGroups/${familyGroupId}/members/${userId}`).remove();
     await db.ref(`users/${userId}/familyGroupId`).remove();
+
+    const ordSnap = await groupRef.child('callRoutingOrder').once('value');
+    if (ordSnap.exists() && Array.isArray(ordSnap.val())) {
+      const filtered = ordSnap.val().map(String).filter((id) => id !== String(userId));
+      await groupRef.child('callRoutingOrder').set(filtered);
+    }
+
     await groupRef.child('updatedAt').set(new Date().toISOString());
 
     res.json({ success: true });
@@ -605,6 +815,7 @@ router.post('/device/unbind', async (req, res) => {
       await userSessionRef.remove();
       await db.ref(`users/${userID}/presence`).set({
         online: false,
+        availabilityStatus: 'offline',
         deviceID: null,
         lastSeen: nowIso,
         updatedAt: nowIso
@@ -643,6 +854,11 @@ router.get("/call/incoming", async (req, res) => {
     snapshot.forEach((child) => {
       const call = child.val();
       if (call.status === "ringing") {
+        if (call.sequentialRouting && call.currentTargetUserId) {
+          if (String(call.currentTargetUserId) !== String(requestingUserId)) {
+            return;
+          }
+        }
         calls.push({ ...call, callID: child.key });
       }
     });
@@ -774,71 +990,136 @@ router.post("/call/:doorID", async (req, res) => {
     const callFamilyGroupId = await getUserFamilyGroupId(ownerID);
     const callPriority = normalizePriority(req.body.priority);
 
-    // Notify all online family members (not just the door owner).
-    // If no family group exists, fallback to notifying the owner only.
-    const tokenList = callFamilyGroupId
-      ? await getOnlineFamilyFcmTokens(callFamilyGroupId)
-      : (
-        (await getUserIsOnline(ownerID))
-          ? await getUserFcmTokens(ownerID)
-          : []
-      );
+    const channelName = `doorbell_${doorID}_${Date.now()}`;
+    const token = generateAgoraToken(channelName);
+    const callID = uuidv4();
+    const createdAt = new Date().toISOString();
 
+    if (callFamilyGroupId) {
+      const routingQueue = await getRoutingMemberQueue(callFamilyGroupId);
+      if (!routingQueue.length) {
+        return res.status(409).json({ error: "No family members to route" });
+      }
+
+      const firstIdx = await findNextRoutableIndex(routingQueue, 0);
+      if (firstIdx < 0) {
+        return res.status(409).json({ error: "No online family devices to notify" });
+      }
+
+      const firstUid = routingQueue[firstIdx];
+      const label = ownerLabelFromIndex(firstIdx);
+      const ringDeadlineAt = new Date(Date.now() + RING_TIMEOUT_MS).toISOString();
+      const visitorStatusMessage = `Calling ${label}...`;
+
+      await db.ref(`calls/${callID}`).set({
+        doorID,
+        channelName,
+        visitorName,
+        status: 'ringing',
+        token,
+        createdAt,
+        ownerPhone: doorData.ownerPhone || null,
+        ownerID: firstUid,
+        familyGroupId: callFamilyGroupId,
+        doorOwnerId: ownerID,
+        priority: callPriority,
+        sequentialRouting: true,
+        routingQueue,
+        routingIndex: firstIdx,
+        currentTargetUserId: firstUid,
+        currentOwnerLabel: label,
+        ringDeadlineAt,
+        visitorStatusMessage,
+        routingPhase: 'ringing',
+      });
+
+      await db.ref(`users/${firstUid}/callLogs/${callID}`).set({
+        callID,
+        visitorName: visitorName || 'Visitor',
+        status: 'ringing',
+        doorID,
+        channelName,
+        createdAt,
+        updatedAt: createdAt,
+      });
+
+      await db.ref(`doors/${doorID}/lastActivity`).set(new Date().toISOString());
+      await db.ref(`users/${doorData.claimedBy}/doorbells/${doorID}/lastActivity`).set(new Date().toISOString());
+
+      await sendIncomingFcmToUsers([firstUid], {
+        type: 'incoming_call',
+        callID,
+        channelName,
+        token,
+        visitorName: visitorName || 'Visitor',
+        priority: callPriority,
+        sequentialRouting: '1',
+        currentOwnerLabel: label,
+        routingIndex: String(firstIdx),
+      }, androidPriorityFromCallPriority(callPriority));
+
+      return res.json({
+        success: true,
+        callID,
+        channelName,
+        agoraAppId: AGORA_APP_ID,
+        token,
+        sequentialRouting: true,
+        visitorStatusMessage,
+        currentOwnerLabel: label,
+      });
+    }
+
+    // Legacy: single owner, no family group
+    const tokenList = (await getUserIsOnline(ownerID)) ? await getUserFcmTokens(ownerID) : [];
     if (!tokenList || tokenList.length === 0) {
       return res.status(409).json({ error: "No online family devices to notify" });
     }
 
-    // Generate unique channel name for this call
-    const channelName = `doorbell_${doorID}_${Date.now()}`;
-    
-    // Generate Agora token (you'll need to implement this)
-    const token = generateAgoraToken(channelName);
-
-    // Store call information
-    const callID = uuidv4();
-    const createdAt = new Date().toISOString();
     await db.ref(`calls/${callID}`).set({
-      doorID: doorID,
-      channelName: channelName,
-      visitorName: visitorName,
+      doorID,
+      channelName,
+      visitorName,
       status: 'ringing',
-      token: token,
-      createdAt: createdAt,
+      token,
+      createdAt,
       ownerPhone: doorData.ownerPhone || null,
       ownerID: ownerID || null,
-      familyGroupId: callFamilyGroupId,
-      priority: callPriority
+      familyGroupId: null,
+      priority: callPriority,
+      sequentialRouting: false,
+      visitorStatusMessage: 'Calling homeowner...',
+      currentOwnerLabel: 'Owner',
     });
 
-    // Create initial call log entry in user's call logs
     await db.ref(`users/${ownerID}/callLogs/${callID}`).set({
-      callID: callID,
+      callID,
       visitorName: visitorName || 'Visitor',
       status: 'ringing',
-      doorID: doorID,
-      channelName: channelName,
-      createdAt: createdAt,
-      updatedAt: createdAt
+      doorID,
+      channelName,
+      createdAt,
+      updatedAt: createdAt,
     });
 
-    // Update doorbell last activity
     await db.ref(`doors/${doorID}/lastActivity`).set(new Date().toISOString());
     await db.ref(`users/${doorData.claimedBy}/doorbells/${doorID}/lastActivity`).set(new Date().toISOString());
 
-    // Notify owner via FCM
     try {
       const message = {
         notification: { title: 'Incoming Call', body: `Visitor: ${visitorName || ''}` },
         data: {
           type: 'incoming_call',
-          callID: callID,
-          channelName: channelName,
-          token: token,
-          visitorName: visitorName || 'Visitor'
+          callID,
+          channelName,
+          token,
+          visitorName: visitorName || 'Visitor',
+          sequentialRouting: '0',
+          currentOwnerLabel: 'Owner',
         },
         android: { priority: androidPriorityFromCallPriority(callPriority) },
         apns: { headers: { 'apns-priority': '10' } },
-        tokens: tokenList
+        tokens: tokenList,
       };
       await messaging.sendEachForMulticast(message);
     } catch (err) {
@@ -847,10 +1128,13 @@ router.post("/call/:doorID", async (req, res) => {
 
     res.json({
       success: true,
-      callID: callID,
-      channelName: channelName,
+      callID,
+      channelName,
       agoraAppId: AGORA_APP_ID,
-      token: token
+      token,
+      sequentialRouting: false,
+      visitorStatusMessage: 'Calling homeowner...',
+      currentOwnerLabel: 'Owner',
     });
   } catch (error) {
     console.error("Call initiation failed:", error);
@@ -896,6 +1180,11 @@ router.post("/call/:callID/accept", async (req, res) => {
       if (role !== "admin" && role !== "member") {
         return res.status(403).json({ error: "Not allowed to accept this call" });
       }
+      if (callData.sequentialRouting && callData.currentTargetUserId) {
+        if (String(accepterUserId) !== String(callData.currentTargetUserId)) {
+          return res.status(403).json({ error: "Wait — another owner is being rung first" });
+        }
+      }
     } else {
       if (String(accepterUserId) !== String(callData.ownerID)) {
         return res.status(403).json({ error: "Not allowed to accept this call" });
@@ -904,12 +1193,21 @@ router.post("/call/:callID/accept", async (req, res) => {
 
     const updatedAt = new Date().toISOString();
 
+    await db.ref(`users/${accepterUserId}/presence`).update({
+      availabilityStatus: 'busy',
+      busyCallId: callID,
+      updatedAt: updatedAt,
+    });
+
     // Mark acceptance and set the current handler/ownerID to the accepter.
     await db.ref(`calls/${callID}`).update({
       status: "accepted",
       acceptedAt: updatedAt,
       ownerID: accepterUserId,
       acceptedBy: accepterUserId,
+      ringDeadlineAt: null,
+      visitorStatusMessage: 'Connected',
+      routingPhase: 'answered',
     });
 
     // Write/overwrite a call log entry under the user who accepted.
@@ -929,6 +1227,34 @@ router.post("/call/:callID/accept", async (req, res) => {
     console.error("Call acceptance failed:", error);
     const statusCode = error?.statusCode;
     res.status(statusCode || 500).json({ error: "Server error" });
+  }
+});
+
+// ✅ Reject incoming ring (sequential — advances to next owner)
+router.post('/call/:callID/reject', async (req, res) => {
+  try {
+    const { callID } = req.params;
+    const { userID, userId } = req.body;
+    const uid = (userID || userId || '').toString();
+    if (!uid) return res.status(400).json({ error: 'Missing userID' });
+
+    const callData = await getCallDataOrThrow(callID);
+    if (callData.status !== 'ringing') {
+      return res.status(409).json({ error: 'Call is not ringing' });
+    }
+    if (!callData.sequentialRouting) {
+      return res.status(400).json({ error: 'Reject applies to family sequential calls only' });
+    }
+    if (String(uid) !== String(callData.currentTargetUserId)) {
+      return res.status(403).json({ error: 'Not your turn for this call' });
+    }
+
+    await advanceSequentialRing(callID, true);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Call reject failed:', error);
+    const statusCode = error?.statusCode;
+    res.status(statusCode || 500).json({ error: 'Server error' });
   }
 });
 
@@ -967,10 +1293,25 @@ router.post("/call/:callID/priority", async (req, res) => {
       updatedAt: new Date().toISOString(),
     });
 
-    // Notify online family members again so priority can take effect immediately.
-    const familyGroupTokens = callFamilyGroupId
-      ? await getOnlineFamilyFcmTokens(callFamilyGroupId)
-      : ((await getUserIsOnline(callData.ownerID)) ? await getUserFcmTokens(callData.ownerID) : []);
+    let notifyUserIds = [];
+    if (callFamilyGroupId && callData.sequentialRouting && callData.status === 'ringing' && callData.currentTargetUserId) {
+      notifyUserIds = [callData.currentTargetUserId];
+    } else if (callFamilyGroupId) {
+      const memberIds = await getFamilyMemberIds(callFamilyGroupId);
+      for (const mid of memberIds) {
+        if (await getUserIsOnline(mid)) notifyUserIds.push(mid);
+      }
+    } else if (await getUserIsOnline(callData.ownerID)) {
+      notifyUserIds = [callData.ownerID];
+    }
+
+    const familyGroupTokens = [];
+    for (const uid of notifyUserIds) {
+      const ts = await getUserFcmTokens(uid);
+      for (const t of ts) {
+        if (t && !familyGroupTokens.includes(t)) familyGroupTokens.push(t);
+      }
+    }
 
     if (familyGroupTokens.length === 0) {
       return res.status(409).json({ error: "No online devices to notify" });
@@ -988,6 +1329,8 @@ router.post("/call/:callID/priority", async (req, res) => {
         token: callData.token,
         visitorName: callData.visitorName || "Visitor",
         priority: newPriority,
+        sequentialRouting: callData.sequentialRouting ? '1' : '0',
+        currentOwnerLabel: callData.currentOwnerLabel || '',
       },
       android: { priority: androidPriorityFromCallPriority(newPriority) },
       apns: { headers: { "apns-priority": "10" } },
@@ -1019,6 +1362,9 @@ router.post("/call/:callID/forward", async (req, res) => {
 
     if (!callFamilyGroupId) {
       return res.status(403).json({ error: "Forwarding requires a family group" });
+    }
+    if (callData.sequentialRouting) {
+      return res.status(409).json({ error: "Manual forward disabled during sequential routing" });
     }
 
     const fromRole = await getUserRoleInFamilyGroup(callFamilyGroupId, fromUser);
@@ -1085,12 +1431,26 @@ router.post("/call/:callID/end", async (req, res) => {
     const { callID } = req.params;
 
     const { userID, userId } = req.body;
-    const actorUserId = (userID || userId || "").toString();
-    if (!actorUserId) {
-      return res.status(400).json({ error: "Missing userID" });
-    }
+    let actorUserId = (userID || userId || "").toString();
 
     const callData = await getCallDataOrThrow(callID);
+
+    if (!actorUserId) {
+      if (callData.status !== "ringing" && callData.status !== "accepted") {
+        return res.status(400).json({ error: "Call already ended" });
+      }
+      const endedAt = new Date().toISOString();
+      await db.ref(`calls/${callID}`).update({
+        status: "ended",
+        endedAt,
+        endedBy: "visitor",
+        visitorStatusMessage:
+          callData.status === "ringing" ? "Visitor cancelled" : "Call ended",
+        ringDeadlineAt: null,
+      });
+      if (callData.acceptedBy) await clearBusyForUser(callData.acceptedBy);
+      return res.json({ success: true, message: "Call ended" });
+    }
 
     const callFamilyGroupId = callData.familyGroupId || (await getUserFamilyGroupId(callData.ownerID));
     if (callFamilyGroupId) {
@@ -1111,14 +1471,16 @@ router.post("/call/:callID/end", async (req, res) => {
       status: "ended",
       endedAt: endedAt,
       endedBy: actorUserId,
+      ringDeadlineAt: null,
     });
+
+    if (callData.acceptedBy) await clearBusyForUser(callData.acceptedBy);
 
     let logStatus = "declined";
     if (currentStatus === "accepted") {
       logStatus = "approved";
     }
 
-    // Ensure call log exists and is updated for the actor.
     await db.ref(`users/${actorUserId}/callLogs/${callID}`).set({
       callID: callID,
       visitorName: callData.visitorName || "Visitor",
@@ -1249,6 +1611,23 @@ function generateAgoraToken(channelName) {
   return RtcTokenBuilder.buildTokenWithUid(appID, appCertificate, channelName, uid, role, privilegeExpireTime);
 }
 
+// Sequential routing: advance ring target when deadline passes
+setInterval(async () => {
+  try {
+    const snapshot = await db.ref('calls').once('value');
+    const tasks = [];
+    snapshot.forEach((child) => {
+      const call = child.val();
+      if (call.status === 'ringing' && call.sequentialRouting) {
+        tasks.push(advanceSequentialRing(child.key, false));
+      }
+    });
+    await Promise.all(tasks);
+  } catch (err) {
+    console.error('Error during routing advance:', err);
+  }
+}, 5000);
+
 // Scheduled cleanup to auto-end long-running calls (max 3 minutes)
 setInterval(async () => {
   try {
@@ -1260,8 +1639,20 @@ setInterval(async () => {
       if ((call.status === 'ringing' || call.status === 'accepted') && call.createdAt) {
         const createdAt = new Date(call.createdAt).getTime();
         if (now - createdAt > maxDurationMs) {
-          db.ref(`calls/${child.key}/status`).set('ended');
-          db.ref(`calls/${child.key}/endedAt`).set(new Date().toISOString());
+          const updates = {
+            status: 'ended',
+            endedAt: new Date().toISOString(),
+            endedBy: 'system_timeout',
+            ringDeadlineAt: null,
+          };
+          if (call.status === 'ringing' && call.sequentialRouting) {
+            updates.visitorStatusMessage = 'Call timed out';
+            updates.routingPhase = 'timeout';
+          }
+          db.ref(`calls/${child.key}`).update(updates);
+          if (call.acceptedBy) {
+            clearBusyForUser(call.acceptedBy);
+          }
           console.log(`Auto-ended call after 3 minutes: ${child.key}`);
         }
       }
