@@ -1473,6 +1473,96 @@ router.post("/call/:callID/forward", async (req, res) => {
   }
 });
 
+// ✅ Transfer sequential ring to a specific family member (ringing phase)
+router.post("/call/:callID/transfer", async (req, res) => {
+  try {
+    const { callID } = req.params;
+    const { fromUserID, fromUserId, toUserID, toUserId } = req.body;
+
+    const fromUser = (fromUserID || fromUserId || "").toString();
+    const toUser = (toUserID || toUserId || "").toString();
+    if (!fromUser || !toUser) {
+      return res.status(400).json({ error: "Missing fromUserID/toUserID" });
+    }
+
+    const callData = await getCallDataOrThrow(callID);
+    if (!callData.sequentialRouting) {
+      return res.status(409).json({ error: "Transfer is for sequential routing calls only" });
+    }
+    if (callData.status !== "ringing") {
+      return res.status(409).json({ error: "Call is not in ringing state" });
+    }
+    if (String(callData.currentTargetUserId) !== String(fromUser)) {
+      return res.status(403).json({ error: "Only the currently rung owner can transfer" });
+    }
+
+    const callFamilyGroupId = callData.familyGroupId || (await getUserFamilyGroupId(callData.ownerID));
+    if (!callFamilyGroupId) {
+      return res.status(403).json({ error: "Transfer requires a family group" });
+    }
+
+    const fromRole = await getUserRoleInFamilyGroup(callFamilyGroupId, fromUser);
+    const toRole = await getUserRoleInFamilyGroup(callFamilyGroupId, toUser);
+    if ((fromRole !== "admin" && fromRole !== "member") ||
+        (toRole !== "admin" && toRole !== "member")) {
+      return res.status(403).json({ error: "Both users must be family members" });
+    }
+    if (String(fromUser) === String(toUser)) {
+      return res.status(400).json({ error: "Cannot transfer to same user" });
+    }
+    if (!(await isUserRoutable(toUser))) {
+      return res.status(409).json({ error: "Target owner is unavailable" });
+    }
+
+    const queue = Array.isArray(callData.routingQueue)
+      ? callData.routingQueue.map(String)
+      : [];
+    const idx = queue.indexOf(String(toUser));
+    if (idx < 0) {
+      return res.status(403).json({ error: "Target not in routing queue" });
+    }
+
+    const label = ownerLabelFromIndex(idx);
+    const ringDeadlineAt = new Date(Date.now() + RING_TIMEOUT_MS).toISOString();
+    const updatedAt = new Date().toISOString();
+    const pri = normalizePriority(callData.priority);
+
+    await db.ref(`calls/${callID}`).update({
+      ownerID: toUser,
+      currentTargetUserId: toUser,
+      currentOwnerLabel: label,
+      routingIndex: idx,
+      ringDeadlineAt,
+      visitorStatusMessage: `Calling ${label}...`,
+      updatedAt,
+      routedBy: fromUser,
+    });
+
+    await sendIncomingFcmToUsers([toUser], {
+      type: 'incoming_call',
+      callID,
+      channelName: callData.channelName,
+      token: callData.token,
+      visitorName: callData.visitorName || 'Visitor',
+      priority: pri,
+      sequentialRouting: '1',
+      currentOwnerLabel: label,
+      routingIndex: String(idx),
+    }, androidPriorityFromCallPriority(pri));
+
+    await sendRingCancelledFcmToUsers([fromUser], {
+      callID,
+      reason: "transferred",
+    });
+
+    res.json({ success: true, callID, forwardedTo: toUser, currentOwnerLabel: label });
+  } catch (error) {
+    console.error("Call transfer failed:", error);
+    const statusCode = error?.statusCode;
+    res.status(statusCode || 500).json({ error: "Server error" });
+  }
+});
+
 // ✅ End call
 router.post("/call/:callID/end", async (req, res) => {
   try {
