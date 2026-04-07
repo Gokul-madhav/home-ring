@@ -1633,6 +1633,10 @@ router.post("/call/:callID/end", async (req, res) => {
       endedAt: endedAt,
       endedBy: actorUserId,
       ringDeadlineAt: null,
+      visitorStatusMessage:
+        currentStatus === "accepted"
+          ? "Video call ended by owner"
+          : "Call ended",
     });
 
     if (callData.acceptedBy) await clearBusyForUser(callData.acceptedBy);
