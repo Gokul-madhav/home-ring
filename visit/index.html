@@ -436,9 +436,14 @@
                     })
                 });
 
-                const data = await response.json();
+                let data = {};
+                try {
+                    data = await response.json();
+                } catch (_) {
+                    data = {};
+                }
 
-                if (data.success) {
+                if (response.ok && data.success) {
                     callID = data.callID;
                     channelName = data.channelName;
 
@@ -452,11 +457,14 @@
                     // Start polling for call status
                     pollCallStatus();
                 } else {
-                    throw new Error(data.error || 'Failed to ring doorbell');
+                    const serverMessage = (data && (data.error || data.message))
+                        ? String(data.error || data.message)
+                        : `Failed to ring doorbell (HTTP ${response.status})`;
+                    throw new Error(serverMessage);
                 }
             } catch (error) {
                 console.error('Error ringing doorbell:', error);
-                alert('Failed to ring doorbell. Please try again.');
+                alert(error?.message || 'Failed to ring doorbell. Please try again.');
 
                 // Reset button state
                 ringText.classList.remove('hidden');
