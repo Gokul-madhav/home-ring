@@ -108,9 +108,14 @@ async function getUserAvailabilityStatus(userId) {
   const p = presSnap.val();
   const st = (p.availabilityStatus || '').toString().toLowerCase();
   if (st === 'busy') return 'busy';
+  // Session binding is the source of truth for active device login.
+  // Presence `online:false` can be stale after takeovers/app restarts.
+  if (sessionOk) {
+    return 'online';
+  }
   if (st === 'offline') return 'offline';
   if (p.online === false) return 'offline';
-  return sessionOk ? 'online' : 'offline';
+  return 'offline';
 }
 
 async function isUserRoutable(userId) {
@@ -1051,7 +1056,7 @@ router.post("/call/:doorID", async (req, res) => {
 
       const firstIdx = await findNextRoutableIndex(routingQueue, 0);
       if (firstIdx < 0) {
-        return res.status(409).json({ error: "No online family devices to notify" });
+        return res.status(409).json({ error: "All family members are unavailable right now. Please try again shortly." });
       }
 
       const firstUid = routingQueue[firstIdx];
@@ -1121,7 +1126,7 @@ router.post("/call/:doorID", async (req, res) => {
     // Legacy: single owner, no family group
     const tokenList = (await getUserIsOnline(ownerID)) ? await getUserFcmTokens(ownerID) : [];
     if (!tokenList || tokenList.length === 0) {
-      return res.status(409).json({ error: "No online family devices to notify" });
+      return res.status(409).json({ error: "Owner is unavailable right now. Please try again shortly." });
     }
 
     await db.ref(`calls/${callID}`).set({
@@ -1489,11 +1494,14 @@ router.post("/call/:callID/transfer", async (req, res) => {
     if (!callData.sequentialRouting) {
       return res.status(409).json({ error: "Transfer is for sequential routing calls only" });
     }
-    if (callData.status !== "ringing") {
-      return res.status(409).json({ error: "Call is not in ringing state" });
+    if (callData.status !== "ringing" && callData.status !== "accepted") {
+      return res.status(409).json({ error: "Call cannot be transferred in current state" });
     }
-    if (String(callData.currentTargetUserId) !== String(fromUser)) {
-      return res.status(403).json({ error: "Only the currently rung owner can transfer" });
+    const activeHandler = callData.status === "accepted"
+      ? (callData.acceptedBy || callData.ownerID)
+      : callData.currentTargetUserId;
+    if (String(activeHandler || "") !== String(fromUser)) {
+      return res.status(403).json({ error: "Only the active owner can transfer" });
     }
 
     const callFamilyGroupId = callData.familyGroupId || (await getUserFamilyGroupId(callData.ownerID));
@@ -1532,11 +1540,16 @@ router.post("/call/:callID/transfer", async (req, res) => {
       currentTargetUserId: toUser,
       currentOwnerLabel: label,
       routingIndex: idx,
+      status: "ringing",
+      acceptedBy: null,
+      acceptedAt: null,
       ringDeadlineAt,
       visitorStatusMessage: `Calling ${label}...`,
       updatedAt,
       routedBy: fromUser,
     });
+
+    await clearBusyForUser(fromUser);
 
     await sendIncomingFcmToUsers([toUser], {
       type: 'incoming_call',
