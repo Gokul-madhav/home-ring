@@ -95,8 +95,8 @@ async function getCallDataOrThrow(callID) {
   return callSnap.val();
 }
 
-/** Sequential family routing: ring each owner slot ~12s before advancing */
-const RING_TIMEOUT_MS = 12000;
+/** Sequential family routing: ring each owner slot ~45s before advancing */
+const RING_TIMEOUT_MS = 45000;
 
 async function getUserAvailabilityStatus(userId) {
   if (!userId) return 'offline';
@@ -222,7 +222,7 @@ async function finalizeCallNoAnswer(callID) {
     status: 'ended',
     endedAt,
     routingPhase: 'no_answer',
-    visitorStatusMessage: 'All members are unavailable',
+    visitorStatusMessage: 'Owners are not available',
     endedBy: 'system',
     updatedAt: endedAt,
   });
@@ -315,7 +315,6 @@ router.post("/generate", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
 
 // ✅ Activate QR code for doorbell
 router.post("/activate", async (req, res) => {
@@ -1306,6 +1305,76 @@ router.post('/call/:callID/reject', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Call reject failed:', error);
+    const statusCode = error?.statusCode;
+    res.status(statusCode || 500).json({ error: 'Server error' });
+  }
+});
+
+// ✅ Transfer to the next routable owner in sequential queue
+router.post('/call/:callID/transfer/next', async (req, res) => {
+  try {
+    const { callID } = req.params;
+    const { userID, userId, fromUserID, fromUserId } = req.body;
+    const uid = (userID || userId || fromUserID || fromUserId || '').toString();
+    if (!uid) return res.status(400).json({ error: 'Missing userID' });
+
+    const callData = await getCallDataOrThrow(callID);
+    if (!callData.sequentialRouting) {
+      return res.status(409).json({ error: 'Next-owner transfer is only for sequential routing calls' });
+    }
+    if (callData.status !== 'ringing' && callData.status !== 'accepted') {
+      return res.status(409).json({ error: 'Call cannot be transferred in current state' });
+    }
+
+    const callFamilyGroupId = callData.familyGroupId || (await getUserFamilyGroupId(callData.ownerID));
+    if (!callFamilyGroupId) {
+      return res.status(403).json({ error: 'Transfer requires a family group' });
+    }
+    const role = await getUserRoleInFamilyGroup(callFamilyGroupId, uid);
+    if (role !== 'admin' && role !== 'member') {
+      return res.status(403).json({ error: 'Not allowed to transfer this call' });
+    }
+
+    const activeHandler = callData.status === 'accepted'
+      ? (callData.acceptedBy || callData.ownerID)
+      : callData.currentTargetUserId;
+    if (String(activeHandler || '') !== String(uid)) {
+      return res.status(403).json({ error: 'Only current owner can transfer to next' });
+    }
+
+    if (callData.status === 'accepted') {
+      await clearBusyForUser(uid);
+    }
+
+    await db.ref(`calls/${callID}`).update({
+      status: 'ringing',
+      acceptedBy: null,
+      acceptedAt: null,
+      ringDeadlineAt: null,
+      routingPhase: 'ringing',
+      updatedAt: new Date().toISOString(),
+    });
+
+    await advanceSequentialRing(callID, true);
+
+    const refreshed = await getCallDataOrThrow(callID);
+    if (refreshed.status === 'ended') {
+      return res.json({
+        success: true,
+        ended: true,
+        visitorStatusMessage: refreshed.visitorStatusMessage || 'Owners are not available',
+      });
+    }
+
+    res.json({
+      success: true,
+      callID,
+      currentTargetUserId: refreshed.currentTargetUserId || null,
+      currentOwnerLabel: refreshed.currentOwnerLabel || null,
+      visitorStatusMessage: refreshed.visitorStatusMessage || null,
+    });
+  } catch (error) {
+    console.error('Transfer to next owner failed:', error);
     const statusCode = error?.statusCode;
     res.status(statusCode || 500).json({ error: 'Server error' });
   }
